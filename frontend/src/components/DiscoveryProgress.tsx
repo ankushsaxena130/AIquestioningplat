@@ -18,11 +18,11 @@ interface DiscoveryProgressProps {
  * silently guessing and moving on.
  */
 function faceFor(mood: ProgressMood, percent: number): string {
-  if (mood === 'thinking') return '🤔'
-  if (percent >= 95) return '🤩'
-  if (percent >= 75) return '😃'
-  if (percent >= 40) return '🙂'
-  return '🙂'
+  if (mood === 'thinking') return '🔮'
+  if (percent >= 95) return '✨'
+  if (percent >= 75) return '🌟'
+  if (percent >= 40) return '⭐'
+  return '🌙'
 }
 
 export default function DiscoveryProgress({
@@ -33,17 +33,17 @@ export default function DiscoveryProgress({
   estimatedTotal
 }: DiscoveryProgressProps) {
   const face = faceFor(mood, percent)
-  const barColor = mood === 'thinking' ? 'bg-amber' : 'bg-signal'
+  const barColor = mood === 'thinking' ? 'from-amber-500 to-amber-400' : 'from-cyan-400 to-blue-500'
 
   return (
-    <div className="w-full">
-      <div className="flex items-center justify-between mb-2">
-        <span className="font-mono text-xs uppercase tracking-wide text-ink/60">
-          {answered} of ~{estimatedTotal} · {percent}%
+    <div className="w-full mb-6">
+      <div className="flex items-center justify-between mb-3">
+        <span className="font-mono text-xs uppercase tracking-widest text-purple-300">
+          Quest Progress · {answered} of ~{estimatedTotal} · {percent}%
         </span>
         <span
-          className={`text-2xl leading-none transition-transform duration-300 ${
-            mood === 'thinking' ? 'animate-pulse' : ''
+          className={`text-3xl leading-none transition-transform duration-300 ${
+            mood === 'thinking' ? 'animate-pulse' : 'animate-glow-pulse'
           }`}
           aria-hidden="true"
         >
@@ -51,19 +51,23 @@ export default function DiscoveryProgress({
         </span>
       </div>
 
-      <div className="h-2.5 w-full rounded-full bg-line overflow-hidden">
+      {/* Progress Bar */}
+      <div className="h-3 w-full rounded-full bg-gradient-to-r from-purple-900/40 to-indigo-900/40 overflow-hidden border border-purple-500/30">
         <div
-          className={`h-full rounded-full ${barColor} transition-all duration-700 ease-out`}
+          className={`h-full rounded-full bg-gradient-to-r ${barColor} transition-all duration-700 ease-out shadow-lg ${
+            mood === 'confident' ? 'shadow-cyan-500/50' : 'shadow-amber-500/50'
+          }`}
           style={{ width: `${percent}%` }}
         />
       </div>
 
+      {/* Message */}
       <p
-        className={`mt-2 text-sm font-medium ${
-          mood === 'thinking' ? 'text-amber' : 'text-signal'
-        }`}
+        className={`mt-3 text-sm font-semibold ${
+          mood === 'thinking' ? 'text-amber-300' : 'text-cyan-300'
+        } transition-colors`}
       >
-        {message}
+        {mood === 'thinking' ? '🔍 ' : '✓ '}{message}
       </p>
     </div>
   )

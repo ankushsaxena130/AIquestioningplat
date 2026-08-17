@@ -3,7 +3,7 @@ import { API_BASE } from '../App'
 import { ExtractedAnswer } from '../types'
 
 interface ProjectIntakeProps {
-  onContinue: (name: string, extracted: ExtractedAnswer[]) => void
+  onContinue: (name: string, extracted: ExtractedAnswer[], sourceDocText?: string) => void
 }
 
 export default function ProjectIntake({ onContinue }: ProjectIntakeProps) {
@@ -24,7 +24,11 @@ export default function ProjectIntake({ onContinue }: ProjectIntakeProps) {
       const res = await fetch(`${API_BASE}/extract`, { method: 'POST', body: formData })
       if (!res.ok) throw new Error('Extraction failed')
       const data = await res.json()
-      onContinue(data.suggestedName || file.name.replace(/\.(pdf|docx)$/i, ''), data.extracted || [])
+      onContinue(
+        data.suggestedName || file.name.replace(/\.(pdf|docx)$/i, ''),
+        data.extracted || [],
+        data.rawText || undefined
+      )
     } catch {
       setError(
         `Couldn't reach the extraction service at ${API_BASE}. Make sure the backend is running, or switch to "Type it myself" below.`
@@ -35,32 +39,36 @@ export default function ProjectIntake({ onContinue }: ProjectIntakeProps) {
   }
 
   return (
-    <div className="bg-white border border-line rounded-2xl p-6 shadow-sm animate-fade-in">
-      <span className="inline-block font-mono text-[11px] uppercase tracking-wide text-signal bg-signal/10 px-2 py-1 rounded-full">
-        Question 1
-      </span>
+    <div className="quest-card rounded-2xl p-8 animate-fade-in max-w-2xl">
+      <div className="quest-chapter mb-3">
+        🗺️ CHAPTER 1: THE QUEST BEGINS
+      </div>
 
-      <h2 className="font-display text-lg font-semibold mt-4 mb-1 text-ink">
-        What's the name of your project?
+      <h2 className="font-display text-2xl font-bold mb-2 text-white">
+        What is the name of your quest?
       </h2>
-      <p className="text-sm text-ink/50 mb-5">
-        Or upload a project brief and we'll pull the name and answer what we
-        can from it — you'll get to review everything before it's used.
+      <p className="text-purple-200 text-base mb-6">
+        Share your project name, or upload a brief — we'll extract key information to guide our conversation.
       </p>
 
-      <div className="flex gap-1 mb-5 bg-paper border border-line rounded-xl p-1 w-fit">
+      {/* Mode Toggle */}
+      <div className="flex gap-2 mb-6 bg-purple-900/30 border border-purple-500/30 rounded-lg p-1 w-fit">
         <button
           onClick={() => setMode('type')}
-          className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-            mode === 'type' ? 'bg-ink text-paper' : 'text-ink/50 hover:text-ink'
+          className={`px-5 py-2 rounded-md text-sm font-semibold transition-all ${
+            mode === 'type' 
+              ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/30' 
+              : 'text-purple-300 hover:text-white'
           }`}
         >
-          Type it myself
+          Tell me
         </button>
         <button
           onClick={() => setMode('upload')}
-          className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-            mode === 'upload' ? 'bg-ink text-paper' : 'text-ink/50 hover:text-ink'
+          className={`px-5 py-2 rounded-md text-sm font-semibold transition-all ${
+            mode === 'upload' 
+              ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/30' 
+              : 'text-purple-300 hover:text-white'
           }`}
         >
           Upload a document
@@ -75,16 +83,16 @@ export default function ProjectIntake({ onContinue }: ProjectIntakeProps) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && name.trim() && onContinue(name.trim(), [])}
-            placeholder="e.g. AI Customer Support Platform"
-            className="w-full border border-line rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-signal/40"
+            placeholder="e.g. 'AI Customer Support Platform'"
+            className="w-full px-4 py-3 border-2 border-purple-500/30 bg-purple-900/20 text-white placeholder-purple-200 rounded-lg text-base focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-400/30 transition-all"
           />
-          <div className="flex justify-end mt-5">
+          <div className="flex justify-end mt-6">
             <button
               onClick={() => name.trim() && onContinue(name.trim(), [])}
               disabled={!name.trim()}
-              className="px-5 py-2.5 rounded-xl bg-ink text-paper text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed hover:bg-ink/90 transition-colors"
+              className="px-6 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-sm font-bold uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-cyan-500/30 transition-all disabled:shadow-none"
             >
-              Continue
+              ⚡ Begin Quest
             </button>
           </div>
         </>
@@ -92,7 +100,7 @@ export default function ProjectIntake({ onContinue }: ProjectIntakeProps) {
         <>
           <div
             onClick={() => fileInputRef.current?.click()}
-            className="border-2 border-dashed border-line rounded-xl p-6 text-center cursor-pointer hover:border-signal hover:bg-signal/5 transition-colors"
+            className="border-2 border-dashed border-purple-500/40 bg-purple-900/10 rounded-lg p-8 text-center cursor-pointer hover:border-cyan-400/60 hover:bg-purple-900/20 transition-all"
           >
             <input
               ref={fileInputRef}
@@ -103,31 +111,31 @@ export default function ProjectIntake({ onContinue }: ProjectIntakeProps) {
             />
             {file ? (
               <div>
-                <div className="text-sm font-medium text-ink">{file.name}</div>
-                <div className="text-xs text-ink/40 mt-1">Click to choose a different file</div>
+                <div className="text-base font-semibold text-cyan-300 mb-2">📋 {file.name}</div>
+                <div className="text-sm text-purple-100">Click to choose a different file</div>
               </div>
             ) : (
               <div>
-                <div className="text-2xl mb-2">📄</div>
-                <div className="text-sm font-medium text-ink">Click to upload a .pdf or .docx</div>
-                <div className="text-xs text-ink/40 mt-1">A project brief, SOW, or requirements doc works well</div>
+                <div className="text-5xl mb-4">📄</div>
+                <div className="text-base font-semibold text-white mb-2">Upload your project brief</div>
+                <div className="text-sm text-purple-100">PDF or DOCX — a requirements doc, SOW, or pitch deck works perfectly</div>
               </div>
             )}
           </div>
 
           {error && (
-            <div className="mt-3 text-xs text-amber bg-amber/10 border border-amber/30 rounded-xl px-3 py-2">
-              {error}
+            <div className="mt-5 text-sm text-amber-200 bg-amber-900/40 border border-amber-500/40 rounded-lg px-4 py-3">
+              ⚠️ {error}
             </div>
           )}
 
-          <div className="flex justify-end mt-5">
+          <div className="flex justify-end mt-6">
             <button
               onClick={handleExtract}
               disabled={!file || extracting}
-              className="px-5 py-2.5 rounded-xl bg-ink text-paper text-sm font-medium disabled:opacity-30 disabled:cursor-not-allowed hover:bg-ink/90 transition-colors"
+              className="px-6 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-sm font-bold uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-cyan-500/30 transition-all disabled:shadow-none"
             >
-              {extracting ? 'Reading document…' : 'Extract & continue'}
+              {extracting ? '🔮 Analyzing...' : '⚡ Extract & Begin'}
             </button>
           </div>
         </>

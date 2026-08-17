@@ -6,6 +6,14 @@ export type Role =
   | 'Security/Compliance'
   | 'IT/Infrastructure'
 
+// 'gap' = closing a requirements/discovery gap (the original behavior).
+// 'ideation' = a proactive "how do we make this better" question — the
+// kind a good consultant (or Claude) would volunteer even if nothing
+// forced them to: what goes on the homepage, what would make this stand
+// out, what's the one feature users would love. Defaults to 'gap' when
+// absent so every pre-existing question definition still works unchanged.
+export type QuestionCategory = 'gap' | 'ideation'
+
 export interface QuestionDef {
   id: string
   domain: string
@@ -14,6 +22,7 @@ export interface QuestionDef {
   options: string[]       // MCQ choices; "Other" is appended automatically
   mandatory: boolean
   dependsOn?: string      // question id that must be answered first
+  category?: QuestionCategory
 }
 
 export interface AnswerRecord {
@@ -21,6 +30,7 @@ export interface AnswerRecord {
   domain: string
   question: string
   answer: string
+  category?: QuestionCategory
 }
 
 export interface ExtractedAnswer {
@@ -29,6 +39,7 @@ export interface ExtractedAnswer {
   question: string
   answer: string
   confidence: number
+  category?: QuestionCategory
 }
 
 export type Screen =

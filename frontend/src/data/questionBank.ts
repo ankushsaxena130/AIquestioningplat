@@ -390,14 +390,87 @@ export const QUESTION_BANK: QuestionDef[] = [
   }
 ]
 
+/**
+ * Ideation / "make it better" questions — separate from gap-filling.
+ * A gap question exists because something is *missing* and blocks
+ * scoping (budget, compliance, hosting). An ideation question exists
+ * even when nothing is missing — it's the kind of thing a sharp
+ * consultant (or Claude) volunteers unprompted: what should the
+ * homepage lead with, what would make users choose this over the
+ * incumbent, what's the one feature that would delight someone on day
+ * one. Not industry-gated — every role/project benefits from being
+ * asked to think about what would make the product *better*, not just
+ * complete.
+ */
+const GENERIC_IDEATION_QUESTIONS: QuestionDef[] = [
+  {
+    id: 'Q-IDEA-001',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: 'What should someone see first when they open the app or land on the homepage?',
+    options: [
+      'Personalized content picked for them',
+      'A simple, clear call-to-action to get started',
+      'Trending / most popular content',
+      'A guided setup or onboarding flow'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  },
+  {
+    id: 'Q-IDEA-002',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: 'What would make someone choose this over the closest existing alternative?',
+    options: [
+      'A better/simpler experience',
+      'A feature competitors lack',
+      'Lower price or a free tier',
+      'Not sure yet — open to suggestions'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  },
+  {
+    id: 'Q-IDEA-003',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: 'If you could add one "delight" feature beyond the core requirements, what would move the needle most?',
+    options: [
+      'Something personalized/AI-driven',
+      'A social or sharing feature',
+      'A gamification or rewards element',
+      'Not sure — open to suggestions'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  },
+  {
+    id: 'Q-IDEA-004',
+    domain: 'Product Ideation',
+    roles: ['Product Manager'],
+    question: 'How should a brand-new user be guided through their very first session?',
+    options: [
+      'Interactive step-by-step onboarding',
+      'Let them explore freely, no tutorial',
+      'A short welcome video or tour',
+      'Ask a few preference questions up front'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  }
+]
+
 export function questionsForRole(role: string, projectContext?: string): QuestionDef[] {
   const base = QUESTION_BANK.filter((q) => q.roles.includes(role as any))
-  if (!projectContext) return base
+  const ideation = GENERIC_IDEATION_QUESTIONS.filter((q) => q.roles.includes(role as any))
+  const withIdeation = [...base, ...ideation]
+  if (!projectContext) return withIdeation
 
   const industryQuestions = questionsForIndustry(projectContext, role)
   // de-dupe by id in case of overlap
-  const ids = new Set(base.map((q) => q.id))
-  return [...base, ...industryQuestions.filter((q) => !ids.has(q.id))]
+  const ids = new Set(withIdeation.map((q) => q.id))
+  return [...withIdeation, ...industryQuestions.filter((q) => !ids.has(q.id))]
 }
 
 /**
@@ -547,6 +620,50 @@ const INDUSTRY_QUESTIONS: QuestionDef[] = [
     mandatory: true
   },
 
+  // ---------- Music / streaming — ideation ----------
+  {
+    id: 'Q-MUSIC-IDEA-001',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: "What should the app's home screen lead with?",
+    options: [
+      'A personalized "For You" mix',
+      'New releases from followed artists',
+      'Editorially curated playlists',
+      'Trending / most-played right now'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  },
+  {
+    id: 'Q-MUSIC-IDEA-002',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: 'What genres or moods should be prioritized at launch to define the catalog identity?',
+    options: [
+      'Broad, mainstream coverage across all genres',
+      'A curated niche (e.g. indie, electronic, hip-hop)',
+      'Mood/activity-based (workout, focus, chill)',
+      'Not decided — open to a recommendation'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  },
+  {
+    id: 'Q-MUSIC-IDEA-003',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: 'What would make a listener pick this over Spotify or Apple Music?',
+    options: [
+      'A tighter, more curated catalog',
+      'Better support for a specific niche/community',
+      'A unique social or discovery feature',
+      'Not sure yet — open to suggestions'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  },
+
   // ---------- E-commerce ----------
   {
     id: 'Q-ECOM-001',
@@ -589,6 +706,36 @@ const INDUSTRY_QUESTIONS: QuestionDef[] = [
     mandatory: true
   },
 
+  // ---------- E-commerce — ideation ----------
+  {
+    id: 'Q-ECOM-IDEA-001',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: 'What should shoppers see first on the homepage?',
+    options: [
+      'Bestsellers / trending products',
+      'Personalized picks based on browsing history',
+      'Current promotions or deals',
+      'A curated "new arrivals" showcase'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  },
+  {
+    id: 'Q-ECOM-IDEA-002',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: 'What would make a shopper trust this store over a marketplace like Amazon?',
+    options: [
+      'Stronger brand story / curation',
+      'Better customer service or return policy',
+      'Reviews and social proof front and center',
+      'Not sure yet — open to suggestions'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  },
+
   // ---------- Healthcare ----------
   {
     id: 'Q-HEALTH-001',
@@ -623,6 +770,22 @@ const INDUSTRY_QUESTIONS: QuestionDef[] = [
     mandatory: true
   },
 
+  // ---------- Healthcare — ideation ----------
+  {
+    id: 'Q-HEALTH-IDEA-001',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: 'What should a patient see first when they open the app?',
+    options: [
+      'Their next upcoming appointment',
+      'A quick way to message their care team',
+      'Recent test results or health summary',
+      'A prompt to book something'
+    ],
+    mandatory: false,
+    category: 'ideation'
+  },
+
   // ---------- Fintech ----------
   {
     id: 'Q-FIN-001',
@@ -655,6 +818,22 @@ const INDUSTRY_QUESTIONS: QuestionDef[] = [
     question: 'Should this integrate with an accounting system like QuickBooks?',
     options: ['Yes - QuickBooks', 'Yes - another system', 'No, standalone', 'Not decided yet'],
     mandatory: true
+  },
+
+  // ---------- Fintech — ideation ----------
+  {
+    id: 'Q-FIN-IDEA-001',
+    domain: 'Product Ideation',
+    roles: ['Product Manager', 'Business Owner'],
+    question: 'What would make a user trust this app with their money?',
+    options: [
+      'Clear, transparent fees shown up front',
+      'Visible security/compliance badges',
+      'Human support easily reachable',
+      'Not sure yet — open to suggestions'
+    ],
+    mandatory: false,
+    category: 'ideation'
   }
 ]
 
@@ -702,7 +881,12 @@ export const DOMAIN_CRITICALITY: Record<string, number> = {
   Timeline: 2,
   Stakeholders: 2,
   'Success Metrics': 2,
-  Risks: 3
+  Risks: 3,
+  // Ideation questions are intentionally lower-weighted than any gap
+  // domain — gaps that block scoping get resolved first, ideation
+  // questions fill in once the fundamentals are covered, same as a
+  // human consultant would sequence a conversation.
+  'Product Ideation': 1
 }
 
 /**

@@ -82,6 +82,7 @@ class AnswerIn(BaseModel):
     domain: str
     question: str
     answer: str
+    category: Optional[str] = "gap"   # "gap" (requirements) or "ideation" (make-it-better)
 
 
 class ProjectIn(BaseModel):
@@ -91,6 +92,7 @@ class ProjectIn(BaseModel):
     total: int
     answered: int
     summary: Optional[str] = None
+    sourceDocText: Optional[str] = None   # raw text of an uploaded brief, if any — grounds the architecture brief
 
 
 # ---------- persistence layer ----------
@@ -129,10 +131,12 @@ if _USE_DB:
                         readiness INT NOT NULL,
                         summary TEXT,
                         created_at TEXT NOT NULL,
-                        owner_id TEXT
+                        owner_id TEXT,
+                        source_doc_text TEXT
                     )
                 """)
                 cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS owner_id TEXT")
+                cur.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS source_doc_text TEXT")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
                         id TEXT PRIMARY KEY,
@@ -149,9 +153,11 @@ if _USE_DB:
                         question_id TEXT,
                         domain TEXT,
                         question TEXT,
-                        answer TEXT
+                        answer TEXT,
+                        category TEXT DEFAULT 'gap'
                     )
                 """)
+                cur.execute("ALTER TABLE answers ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'gap'")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS feedback (
                         id TEXT PRIMARY KEY,
@@ -178,19 +184,21 @@ if _USE_DB:
             try:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO projects (id, name, role, total, answered, readiness, summary, created_at, owner_id) "
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                        "INSERT INTO projects (id, name, role, total, answered, readiness, summary, created_at, owner_id, source_doc_text) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                         "ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, role=EXCLUDED.role, "
                         "total=EXCLUDED.total, answered=EXCLUDED.answered, readiness=EXCLUDED.readiness, "
-                        "summary=EXCLUDED.summary",
+                        "summary=EXCLUDED.summary, source_doc_text=EXCLUDED.source_doc_text",
                         (project_id, data["name"], data["role"], data["total"], data["answered"],
-                         data["readiness"], data.get("summary"), data["createdAt"], data.get("ownerId")),
+                         data["readiness"], data.get("summary"), data["createdAt"], data.get("ownerId"),
+                         data.get("sourceDocText")),
                     )
                     for a in data["answers"]:
                         cur.execute(
-                            "INSERT INTO answers (project_id, question_id, domain, question, answer) "
-                            "VALUES (%s,%s,%s,%s,%s)",
-                            (project_id, a["questionId"], a["domain"], a["question"], a["answer"]),
+                            "INSERT INTO answers (project_id, question_id, domain, question, answer, category) "
+                            "VALUES (%s,%s,%s,%s,%s,%s)",
+                            (project_id, a["questionId"], a["domain"], a["question"], a["answer"],
+                             a.get("category", "gap")),
                         )
                 conn.commit()
             finally:
@@ -205,18 +213,19 @@ if _USE_DB:
                     if not row:
                         return default
                     cur.execute(
-                        "SELECT question_id, domain, question, answer FROM answers WHERE project_id=%s ORDER BY id",
+                        "SELECT question_id, domain, question, answer, category FROM answers WHERE project_id=%s ORDER BY id",
                         (project_id,),
                     )
                     answers = [
-                        {"questionId": r["question_id"], "domain": r["domain"], "question": r["question"], "answer": r["answer"]}
+                        {"questionId": r["question_id"], "domain": r["domain"], "question": r["question"],
+                         "answer": r["answer"], "category": r.get("category") or "gap"}
                         for r in cur.fetchall()
                     ]
                 return {
                     "id": row["id"], "name": row["name"], "role": row["role"],
                     "total": row["total"], "answered": row["answered"], "readiness": row["readiness"],
                     "summary": row["summary"], "createdAt": row["created_at"], "answers": answers,
-                    "ownerId": row.get("owner_id"),
+                    "ownerId": row.get("owner_id"), "sourceDocText": row.get("source_doc_text"),
                 }
             finally:
                 _put_conn(conn)
@@ -544,11 +553,18 @@ async def extract_project(file: UploadFile = File(...)):
     if not text.strip():
         raise HTTPException(400, "No readable text found in that file")
 
+    # Keep a capped copy of the raw brief text so it can inform the final
+    # architecture brief later, not just the Q&A pre-fill — grounds the
+    # diagram in whatever the client actually wrote, not only what got
+    # matched to a known question.
+    ARCHITECTURE_SOURCE_CHAR_CAP = 8000
+
     return {
         "suggestedName": guess_project_name(text),
         "extracted": llm_extract_answers_from_text(text),
         "charactersRead": len(text),
         "usedLLM": _grok_client is not None,
+        "rawText": text[:ARCHITECTURE_SOURCE_CHAR_CAP],
     }
 
 
@@ -661,20 +677,39 @@ def next_question(payload: NextQuestionIn):
         return heuristic_next_question(payload)
 
     system_prompt = (
-        "You are the question-selection step of a requirements-discovery interview "
-        "for a consulting firm. You are given a project name, the interviewee's role, "
-        "and everything they've already answered. Decide ONE of two things:\n"
-        "1. If you believe you now understand enough about this project's domain-specific "
-        "needs AND its technical/business fundamentals for this role, respond with "
-        '{"done": true}.\n'
-        "2. Otherwise, ask exactly ONE more multiple-choice question that is SPECIFIC to "
-        "what this project actually is (e.g. a Spotify-like app should get asked about "
-        "music licensing, catalog size, or personalization — not another generic hosting "
-        "question if that's already been asked). Do not repeat the intent of any question "
-        "already asked. Prefer domain-specific gaps over already-covered generic ones. "
+        "You are the question-selection step of an AI discovery interview for a "
+        "consulting firm. You are given a project name, the interviewee's role, and "
+        "everything they've already answered. You have TWO jobs, not one:\n"
+        "1. GAP-FILLING — close missing requirements/scoping info specific to what this "
+        "project actually is (e.g. a Spotify-like app should get asked about music "
+        "licensing, catalog size, or personalization — not another generic hosting "
+        "question if that's already covered).\n"
+        "2. IDEATION — proactively suggest ways to make the project BETTER, the way a "
+        "sharp consultant (or a good product-thinking AI) would volunteer even if nothing "
+        "forced them to. For a music app this looks like: what should the home/landing "
+        "screen lead with, which genres or moods to prioritize at launch, what would make "
+        "someone choose this over Spotify. For any project, think about: what the "
+        "front page / first screen should show, what differentiates it from the obvious "
+        "competitor, what one delightful feature would make users love it, how a "
+        "brand-new user's first few minutes should feel.\n\n"
+        "SEQUENCING RULE: prioritize GAP questions first. Only ask an IDEATION question "
+        "once the core requirements/fundamentals for this role look reasonably well "
+        "covered by answeredSoFar — an ideation question about the homepage is wasted if "
+        "basic scope (budget, users, core features, etc.) is still unclear. Once gaps are "
+        "mostly covered, it's good to ask one or two ideation questions before finishing, "
+        "rather than stopping the moment gaps are done — don't skip ideation entirely.\n\n"
+        "Given what's already been asked and answered, decide ONE of two things:\n"
+        "A. If you believe you now understand enough about this project's fundamentals "
+        "AND have offered at least one ideation question once gaps were covered (if none "
+        "has been asked yet and gaps look done, ask one now rather than stopping), respond "
+        'with {"done": true}.\n'
+        "B. Otherwise, ask exactly ONE more multiple-choice question, following the "
+        "sequencing rule above. Do not repeat the intent of any question already asked. "
         "Respond with ONLY JSON: "
-        '{"done": false, "domain": "short domain label", "question": "the question text", '
+        '{"done": false, "domain": "short domain label", "category": "gap" or "ideation", '
+        '"question": "the question text", '
         '"options": ["option A", "option B", "option C", "option D"]}\n'
+        "For ideation questions, use the domain label \"Product Ideation\". "
         "Never include an 'Other' option yourself — the app adds that automatically. "
         "Stop (done: true) after at most 6 additional questions beyond what's already been "
         "asked, even if more could theoretically be asked — respect the interviewee's time."
@@ -693,9 +728,11 @@ def next_question(payload: NextQuestionIn):
         return {"done": True}
     if not result.get("question") or not result.get("options"):
         return {"done": True}
+    category = result.get("category") if result.get("category") in ("gap", "ideation") else "gap"
     return {
         "done": False,
         "domain": result.get("domain", "Additional Detail"),
+        "category": category,
         "question": result["question"],
         "options": result["options"][:4],
     }
@@ -755,8 +792,13 @@ def summarize_session(payload: SummarizeIn):
 
     system_prompt = (
         "Write a concise, professional third-person paragraph (3-5 sentences) summarizing "
-        "a client's requirements-discovery session for a consulting firm. Base it ONLY on "
-        "the answers given — do not invent details. Write it the way a consultant would "
+        "a client's discovery session for a consulting firm. The answers include both "
+        "requirements/gap-filling questions (category: gap) and proactive product-ideation "
+        "questions about how to make the project better (category: ideation, domain "
+        "'Product Ideation') — weave both in naturally, e.g. note what was decided about "
+        "scope as well as any direction the client gave on things like the homepage/first "
+        "screen experience or what should differentiate the product. Base it ONLY on the "
+        "answers given — do not invent details. Write it the way a consultant would "
         "describe the project to a colleague. "
         'Respond with ONLY JSON: {"summary": "..."}'
     )
@@ -787,6 +829,7 @@ def create_project(project: ProjectIn, current_user: Optional[dict] = Depends(ge
         "readiness": readiness,
         "createdAt": date.today().isoformat(),
         "summary": project.summary,
+        "sourceDocText": project.sourceDocText,
         "ownerId": current_user["id"] if current_user else None,
     }
     return {"id": project_id, "readiness": readiness}
@@ -1193,109 +1236,373 @@ class ReportBuilder:
         self.c.line(MARGIN, self.y, PAGE_W - MARGIN, self.y)
         self.y -= 14
 
+# ---------- Architecture Brief ----------
+# Replaces the old flat "one box per answered domain" flowchart with a
+# real brief: a narrative overview, key decisions, open items still
+# needing a decision, and a layered diagram (client/app/data/integrations/
+# security/infra) grouped the way an actual solutions architect would lay
+# it out — not one box per question. Grounded in EVERY gap answer from the
+# session, plus the raw text of an uploaded brief when the client
+# provided one, so it reflects the whole project rather than just a
+# handful of hardcoded fields.
 
-def find_answer(answers: List[dict], question_id: str) -> str | None:
-    for a in answers:
-        if a["questionId"] == question_id:
-            return a["answer"]
-    return None
+DOMAIN_TO_LAYER: dict[str, str] = {
+    "Business": "Business Context",
+    "Budget": "Business Context",
+    "Timeline": "Business Context",
+    "Stakeholders": "Business Context",
+    "Risks": "Business Context",
+    "Success Metrics": "Business Context",
+    "Users": "Client / Presentation Layer",
+    "Functional Requirements": "Application / API Layer",
+    "Non-Functional Requirements": "Application / API Layer",
+    "Technology": "Application / API Layer",
+    "Architecture": "Application / API Layer",
+    "Data": "Data & Storage Layer",
+    "AI/ML": "Data & Storage Layer",
+    "Integrations": "Integrations & Third-Party Layer",
+    "Licensing": "Integrations & Third-Party Layer",
+    "Security": "Security & Compliance Layer",
+    "Compliance": "Security & Compliance Layer",
+    "Infrastructure": "Infrastructure & Deployment Layer",
+    "Deployment": "Infrastructure & Deployment Layer",
+    "Operations": "Infrastructure & Deployment Layer",
+    "Monitoring": "Infrastructure & Deployment Layer",
+}
+LAYER_ORDER = [
+    "Business Context",
+    "Client / Presentation Layer",
+    "Application / API Layer",
+    "Data & Storage Layer",
+    "Integrations & Third-Party Layer",
+    "Security & Compliance Layer",
+    "Infrastructure & Deployment Layer",
+]
+UNCERTAIN_PATTERNS = ["not sure", "not decided", "undecided", "to be determined", "tbd"]
 
 
-def rule_based_architecture(project: dict) -> List[dict]:
-    """Fallback when no LLM is configured — scans ALL answered domains
-    (not just 4 hardcoded question IDs like the old version), so it at
-    least reflects whatever the project actually covered."""
-    priority_domains = [
-        "Deployment", "Technology", "Architecture", "Integrations", "Security",
-        "Data", "Licensing", "AI/ML", "Compliance", "Infrastructure",
-    ]
-    components = [{"label": "Client application", "detail": "Entry point for end users"}]
-    seen = set()
-    for domain in priority_domains:
-        for a in project["answers"]:
-            if a["domain"] == domain and domain not in seen:
-                components.append({"label": domain, "detail": a["answer"]})
-                seen.add(domain)
-                break
-    if len(components) == 1:
-        components.append({"label": "Backend service", "detail": "not yet confirmed"})
-        components.append({"label": "Data store", "detail": "not yet confirmed"})
-    return components[:7]
+def _is_undecided(answer: str) -> bool:
+    lowered = (answer or "").lower()
+    return any(p in lowered for p in UNCERTAIN_PATTERNS)
 
 
-def llm_generate_architecture(project: dict) -> List[dict]:
-    """
-    Real architecture generation: gives Grok EVERY answer from the session
-    (not just the 4 fields the old version cherry-picked), and asks it to
-    propose components that reflect what this specific project actually
-    is — a Spotify-like app should get a licensing/catalog component, not
-    a generic 4-box template. Grok proposes structured content; this
-    function's caller (draw_architecture_diagram) still does the actual
-    deterministic PDF drawing — the LLM never touches the PDF directly
-    (Part 18 of the design doc).
-    """
+def rule_based_architecture_brief(project: dict) -> dict:
+    """Fallback when no LLM is configured. Deterministic, but still real:
+    groups every gap answer into an architectural layer, and separates
+    decided answers from ones the client explicitly left open, instead of
+    a single flat list of boxes."""
+    gap_answers = [a for a in project["answers"] if a.get("category", "gap") != "ideation"]
+
+    buckets: dict[str, dict] = {name: {} for name in LAYER_ORDER}
+    other_bucket: dict = {}
+    for a in gap_answers:
+        layer = DOMAIN_TO_LAYER.get(a["domain"])
+        target = buckets[layer] if layer else other_bucket
+        target.setdefault(a["domain"], a["answer"])  # first answer per domain wins
+
+    layers = []
+    for name in LAYER_ORDER:
+        comps = [{"label": k, "detail": v} for k, v in buckets[name].items()][:4]
+        if comps:
+            layers.append({"name": name, "components": comps})
+    if other_bucket:
+        comps = [{"label": k, "detail": v} for k, v in other_bucket.items()][:4]
+        if comps:
+            layers.append({"name": "Other Considerations", "components": comps})
+    if not layers:
+        layers = [{"name": "Client / Presentation Layer",
+                    "components": [{"label": "Client application", "detail": "Entry point for end users"}]}]
+
+    domains_covered = sorted({a["domain"] for a in gap_answers})
+    overview = (
+        f"\"{project['name']}\" was scoped by the {project['role']} across "
+        f"{len(domains_covered)} domain{'s' if len(domains_covered) != 1 else ''} "
+        f"({', '.join(domains_covered) if domains_covered else 'no confirmed areas yet'}). "
+        "The architecture groups answers into standard layers: Business Context, Presentation, "
+        "Application, Data, Integrations, Security, and Infrastructure — reflecting what was confirmed."
+    )
+    if project.get("sourceDocText"):
+        overview += " An uploaded project brief informed the initial answer suggestions."
+
+    # Extract key decisions: most answers with concrete values
+    key_decisions = []
+    for a in gap_answers:
+        if not _is_undecided(a["answer"]):
+            decision = f"{a['domain']}: {a['answer']}"
+            if decision not in key_decisions:  # avoid duplicates
+                key_decisions.append(decision)
+    key_decisions = key_decisions[:8]
+
+    # Extract open items: answers that are undecided, plus any domains with no answers
+    open_items = []
+    for a in gap_answers:
+        if _is_undecided(a["answer"]):
+            item = f"{a['domain']} ({a['question']}) — still undecided"
+            if item not in open_items:
+                open_items.append(item)
+    
+    # Add high-criticality domains not covered by any answer
+    for domain in ["Security", "Data", "Infrastructure", "Technology"]:
+        if domain not in domains_covered:
+            open_items.append(f"{domain} — no coverage in this session; recommend follow-up")
+    
+    open_items = open_items[:8]
+
+    # Basic risks derived from answers
+    risks = []
+    answered_text = " ".join([a.get("answer", "") for a in gap_answers]).lower()
+    
+    if "under $25" in answered_text or "under 3 months" in answered_text:
+        risks.append("Risk: Aggressive timeline and/or budget — recommend scope freeze early to avoid creep")
+    if "50,000+" in answered_text or "million" in answered_text:
+        risks.append("Risk: High user volume requires horizontal scaling — plan for load testing and auto-scaling infrastructure")
+    if "personally identifiable" in answered_text or "financial" in answered_text or "hipaa" in answered_text:
+        risks.append("Risk: Sensitive data handling — encryption, audit logging, and compliance review are critical path items")
+    if "on-premise" in answered_text or "hybrid" in answered_text:
+        risks.append("Risk: On-premise deployment adds operational complexity — factor in infrastructure team capacity")
+    
+    # Ensure at least some risks are shown
+    if not risks:
+        risks = [
+            "Risk: Scope creep — monitor feature requests and maintain a prioritized backlog",
+            "Risk: Integration dependencies — clarify third-party API SLAs and fallback strategies early"
+        ]
+    
+    risks = risks[:4]
+
+    return {"overview": overview, "layers": layers, "key_decisions": key_decisions, "open_items": open_items, "risks_and_constraints": risks}
+
+
+def llm_architecture_brief(project: dict) -> dict:
+    """Real generation: gives the LLM every gap answer AND the raw uploaded
+    brief text (if any), and asks for a comprehensive, well-structured 
+    architecture brief with technical details, deployment strategy, and
+    risk considerations. LLM proposes structured content; the caller 
+    (draw_architecture_brief) still does all the actual deterministic PDF 
+    drawing — the LLM never touches the PDF directly."""
     if not _grok_client:
-        return rule_based_architecture(project)
+        return rule_based_architecture_brief(project)
+
+    gap_answers = [a for a in project["answers"] if a.get("category", "gap") != "ideation"]
 
     system_prompt = (
-        "You are a solutions architect. Given a project's name, the role interviewed, and "
-        "every answer gathered during a requirements-discovery session, propose a simple "
-        "top-to-bottom system architecture reflecting what THIS SPECIFIC project actually "
-        "needs — not a generic template. Ground every component in the actual answers "
-        "(deployment choice, integrations, data types, domain-specific needs like licensing "
-        "or compliance, etc.) — don't invent anything not supported by the answers. "
-        "Return 4 to 7 components in logical top-to-bottom flow order. "
-        'Respond with ONLY JSON: {"components": [{"label": "short component name", '
-        '"detail": "one short line grounded in the actual answers"}]}'
+        "You are a senior solutions architect writing a comprehensive architecture brief "
+        "for a consulting firm, based on a client's requirements-discovery session. "
+        "You're given the project name, the role interviewed, every gap-filling answer, "
+        "and the raw text of a project brief if the client uploaded one.\n\n"
+        
+        "Your goal: Produce a brief that reflects what THIS SPECIFIC project actually needs. "
+        "Synthesize the answers into a coherent technical vision. Extract implicit requirements "
+        "(e.g., 'if 50,000+ users, we need horizontal scaling'). Ground EVERYTHING in the "
+        "actual answers or brief text — never invent unsupported details.\n\n"
+        
+        "Key responsibilities:\n"
+        "1. OVERVIEW: Write 2-4 sentences describing the overall technical approach, "
+        "    key scalability/performance strategy, and business context.\n"
+        "2. LAYERS: Group all confirmed answers into architectural layers (Business, Presentation, "
+        "    Application, Data, Integrations, Security, Infrastructure). Each layer should have "
+        "    3-4 concrete components with specific details from the answers.\n"
+        "3. KEY DECISIONS: Extract 5-8 architectural decisions that were confirmed "
+        "    (tech choices, deployment strategy, security approach, etc.). "
+        "    Format as 'Decision: rationale grounded in answers'.\n"
+        "4. OPEN ITEMS: List 3-8 decisions still needed (missing info, TBD details) "
+        "    with enough context for follow-up.\n"
+        "5. RISKS & CONSTRAINTS: Identify 2-4 technical risks or constraints implied by "
+        "    the project scale, budget, or timeline.\n\n"
+        
+        "Respond with ONLY valid JSON (no markdown fences, no prose) in this shape:\n"
+        '{\n'
+        '  "overview": "2-4 sentences on technical approach and strategy",\n'
+        '  "layers": [\n'
+        '    {\n'
+        '      "name": "layer name (e.g., \'Client / Presentation Layer\')",\n'
+        '      "components": [\n'
+        '        {\n'
+        '          "label": "component name",\n'
+        '          "detail": "one specific line grounded in answers (tech choice, purpose, or scale constraint)"\n'
+        '        }\n'
+        '      ]\n'
+        '    }\n'
+        '  ],\n'
+        '  "key_decisions": [\n'
+        '    "Technology X chosen for [reason grounded in answers]",\n'
+        '    "Deployment strategy: [approach based on scale/timeline/budget]"\n'
+        '  ],\n'
+        '  "open_items": [\n'
+        '    "Question: [question], current: [what\'s been decided], missing: [what needs follow-up]"\n'
+        '  ],\n'
+        '  "risks_and_constraints": [\n'
+        '    "Risk: [specific technical risk] — concern: [why], mitigation: [what to decide]"\n'
+        '  ]\n'
+        '}\n\n'
+        
+        "Layer order (use only those with confirmed answers):\n"
+        "1. Business Context (budgets, timeline, success metrics, stakeholder sign-off)\n"
+        "2. Client / Presentation Layer (web/mobile/desktop clients, user experience, accessibility)\n"
+        "3. Application / API Layer (backend services, tech stack, API design, microservices vs monolith)\n"
+        "4. Data & Storage Layer (database choice, data model, volumes, retention, backup)\n"
+        "5. Integrations & Third-Party Layer (SaaS, APIs, payment processing, auth providers)\n"
+        "6. Security & Compliance Layer (authentication, encryption, compliance requirements, audit)\n"
+        "7. Infrastructure & Deployment Layer (cloud provider, hosting, CI/CD, monitoring, disaster recovery)\n\n"
+        
+        "Constraints:\n"
+        "- Each layer: max 4 components (be selective, pick the most important ones)\n"
+        "- Each component detail: must reference an actual answer or brief text\n"
+        "- Key decisions: 5-8 items max\n"
+        "- Open items: 3-8 items max\n"
+        "- Risks: 2-4 items max\n"
+        "- If an answer is vague/undecided (contains 'not sure', 'TBD', etc.), put it in open_items, not key_decisions"
     )
+    
     user_prompt = json.dumps({
         "projectName": project["name"],
-        "role": project["role"],
-        "answers": project["answers"],
+        "roleInterviewed": project["role"],
+        "answeredQuestions": gap_answers,
+        "uploadedBriefText": project.get("sourceDocText") or None,
     }, indent=2)
 
     result = call_grok_json(system_prompt, user_prompt)
-    components = result.get("components") if result else None
-    if not components or not isinstance(components, list):
-        return rule_based_architecture(project)
-    return components[:7]
+    if not result or not isinstance(result.get("layers"), list) or not result.get("overview"):
+        return rule_based_architecture_brief(project)
+    
+    return {
+        "overview": result.get("overview", ""),
+        "layers": result.get("layers", [])[:8],
+        "key_decisions": result.get("key_decisions", [])[:8],
+        "open_items": result.get("open_items", [])[:8],
+        "risks_and_constraints": result.get("risks_and_constraints", [])[:4],
+    }
 
 
-def draw_architecture_diagram(c: canvas.Canvas, project: dict):
-    c.showPage()
-    y_top = PAGE_H - MARGIN
+def generate_architecture_brief(project: dict) -> dict:
+    try:
+        return llm_architecture_brief(project)
+    except Exception as e:
+        print(f"[warn] architecture brief generation failed, falling back to heuristic: {e}")
+        return rule_based_architecture_brief(project)
 
-    c.setFont("Helvetica-Bold", 16)
-    c.setFillColor(colors.HexColor("#141B2E"))
-    c.drawString(MARGIN, y_top, "System Architecture")
-    c.setFont("Helvetica", 9)
-    c.setFillColor(colors.HexColor("#777777"))
-    subtitle = "Generated from this project's full answer set." if _grok_client else \
-        "Built from confirmed answers (no LLM configured — set XAI_API_KEY for a fuller diagram)."
-    c.drawString(MARGIN, y_top - 16, subtitle)
 
-    components = llm_generate_architecture(project)
+def draw_layer_row(c: canvas.Canvas, y_top: float, layer_name: str, components: list) -> float:
+    """Draws one architectural layer's label plus its component boxes side
+    by side. Returns the y coordinate at the bottom of the boxes."""
+    c.setFont("Helvetica-Bold", 9)
+    c.setFillColor(colors.HexColor("#2F6F5E"))
+    c.drawString(MARGIN, y_top, layer_name.upper())
 
-    box_w, box_h = 4.6 * inch, 0.62 * inch
-    x = (PAGE_W - box_w) / 2
-    y = y_top - 90
+    box_h = 0.62 * inch
+    row_top = y_top - 14
+    n = max(1, len(components))
+    gap = 0.2 * inch
+    available = PAGE_W - 2 * MARGIN
+    box_w = min(2.5 * inch, (available - (n - 1) * gap) / n)
+    total_w = n * box_w + (n - 1) * gap
+    start_x = MARGIN + (available - total_w) / 2
 
     palette = ["#EDEDED", "#F5E3DA"]
-    last_label = components[-1]["label"] if components else None
     for i, comp in enumerate(components):
-        fill = palette[i % 2]
-        c.setFillColor(colors.HexColor(fill))
-        c.roundRect(x, y, box_w, box_h, 8, fill=1, stroke=0)
+        x = start_x + i * (box_w + gap)
+        c.setFillColor(colors.HexColor(palette[i % 2]))
+        c.roundRect(x, row_top - box_h, box_w, box_h, 8, fill=1, stroke=0)
         c.setFillColor(colors.HexColor("#141B2E"))
-        c.setFont("Helvetica-Bold", 10)
-        c.drawCentredString(x + box_w / 2, y + box_h - 20, str(comp.get("label", ""))[:50])
-        c.setFont("Helvetica", 8)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawCentredString(x + box_w / 2, row_top - box_h + box_h - 18, str(comp.get("label", ""))[:28])
+        c.setFont("Helvetica", 7.5)
         c.setFillColor(colors.HexColor("#555555"))
-        c.drawCentredString(x + box_w / 2, y + 10, str(comp.get("detail", ""))[:70])
-        if comp.get("label") != last_label:
+        max_chars = max(18, int(box_w / 4.2))
+        c.drawCentredString(x + box_w / 2, row_top - box_h + 10, str(comp.get("detail", ""))[:max_chars])
+
+    return row_top - box_h
+
+
+def draw_architecture_brief(c: canvas.Canvas, project: dict):
+    brief = generate_architecture_brief(project)
+
+    # ---- Page 1: narrative brief ----
+    c.showPage()
+    y = PAGE_H - MARGIN
+    c.setFont("Helvetica-Bold", 16)
+    c.setFillColor(colors.HexColor("#141B2E"))
+    c.drawString(MARGIN, y, "Architecture Brief")
+    y -= 20
+    c.setFont("Helvetica", 9)
+    c.setFillColor(colors.HexColor("#777777"))
+    if _grok_client:
+        subtitle = "Synthesized from this session's answers" + (
+            " and the uploaded project brief." if project.get("sourceDocText") else "."
+        )
+    else:
+        subtitle = "Built from confirmed answers (no LLM configured — set an API key for a fuller brief)."
+    c.drawString(MARGIN, y, subtitle)
+    y -= 26
+
+    c.setFont("Helvetica-Bold", 11)
+    c.setFillColor(colors.HexColor("#2F6F5E"))
+    c.drawString(MARGIN, y, "Overview")
+    y -= 16
+    for line in wrap_text(c, brief.get("overview", ""), "Helvetica", 10, PAGE_W - 2 * MARGIN):
+        if y < MARGIN + 40:
+            c.showPage()
+            y = PAGE_H - MARGIN
+        c.setFont("Helvetica", 10)
+        c.setFillColor(colors.HexColor("#333333"))
+        c.drawString(MARGIN, y, line)
+        y -= 14
+    y -= 12
+
+    def bulleted_section(title: str, items: list):
+        nonlocal y
+        if not items:
+            return
+        if y < MARGIN + 60:
+            c.showPage()
+            y = PAGE_H - MARGIN
+        c.setFont("Helvetica-Bold", 11)
+        c.setFillColor(colors.HexColor("#2F6F5E"))
+        c.drawString(MARGIN, y, title)
+        y -= 16
+        for item in items:
+            lines = wrap_text(c, str(item), "Helvetica", 10, PAGE_W - 2 * MARGIN - 14)
+            for i, line in enumerate(lines):
+                if y < MARGIN + 20:
+                    c.showPage()
+                    y = PAGE_H - MARGIN
+                c.setFont("Helvetica", 10)
+                c.setFillColor(colors.HexColor("#333333"))
+                c.drawString(MARGIN, y, ("•  " if i == 0 else "    ") + line)
+                y -= 14
+            y -= 4
+        y -= 10
+
+    bulleted_section("Key Decisions", brief.get("key_decisions", []))
+    bulleted_section("Open Items to Resolve", brief.get("open_items", []))
+    bulleted_section("Risks & Constraints", brief.get("risks_and_constraints", []))
+
+    # ---- Page 2+: layered diagram ----
+    c.showPage()
+    y = PAGE_H - MARGIN
+    c.setFont("Helvetica-Bold", 16)
+    c.setFillColor(colors.HexColor("#141B2E"))
+    c.drawString(MARGIN, y, "System Architecture Diagram")
+    y -= 16
+    c.setFont("Helvetica", 9)
+    c.setFillColor(colors.HexColor("#777777"))
+    c.drawString(MARGIN, y, "Grouped by architectural layer, top to bottom.")
+    y -= 40
+
+    layers = [l for l in (brief.get("layers") or []) if l.get("components")]
+    for idx, layer in enumerate(layers):
+        components = layer.get("components", [])[:4]
+        needed = 14 + 0.62 * inch + 32
+        if y - needed < MARGIN:
+            c.showPage()
+            y = PAGE_H - MARGIN
+
+        bottom_y = draw_layer_row(c, y, layer.get("name", "Layer"), components)
+        if idx < len(layers) - 1:
             c.setStrokeColor(colors.HexColor("#999999"))
-            c.line(x + box_w / 2, y, x + box_w / 2, y - 20)
-        y -= box_h + 20
+            cx = PAGE_W / 2
+            c.line(cx, bottom_y, cx, bottom_y - 16)
+        y = bottom_y - 32
 
 
 @app.get("/projects/{project_id}/report")
@@ -1321,10 +1628,16 @@ def download_report(project_id: str):
         r.body(project["summary"])
         r.rule()
 
-    # Answers grouped by domain
+    # Answers grouped by domain — requirements (gap) and ideation kept in
+    # separate sections so a consultant can scan "what's scoped" and
+    # "what direction the client wants" independently, rather than one
+    # undifferentiated wall of Q&A.
+    gap_answers = [a for a in project["answers"] if a.get("category", "gap") != "ideation"]
+    ideation_answers = [a for a in project["answers"] if a.get("category") == "ideation"]
+
     r.heading("Captured Requirements", 16)
     domains: dict[str, list] = {}
-    for a in project["answers"]:
+    for a in gap_answers:
         domains.setdefault(a["domain"], []).append(a)
 
     for domain, items in domains.items():
@@ -1335,8 +1648,22 @@ def download_report(project_id: str):
             r.y -= 4
         r.rule()
 
+    if ideation_answers:
+        r.heading("Product Direction / Ideas", 16)
+        r.body(
+            "Not gaps to close — proactive direction the client gave on making the "
+            "product better, worth carrying into design and scoping discussions.",
+            size=9, color="#777777"
+        )
+        r.y -= 4
+        for item in ideation_answers:
+            r.body(f"Q: {item['question']}", size=10, color="#555555")
+            r.body(f"A: {item['answer']}", size=10, color="#141B2E")
+            r.y -= 4
+        r.rule()
+
     # Architecture diagram, always the final page
-    draw_architecture_diagram(c, project)
+    draw_architecture_brief(c, project)
 
     c.save()
     buffer.seek(0)

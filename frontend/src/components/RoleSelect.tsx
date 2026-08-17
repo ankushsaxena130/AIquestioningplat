@@ -16,15 +16,15 @@ const ROLES: { role: Role; blurb: string }[] = [
 
 export default function RoleSelect({ onSelect }: RoleSelectProps) {
   return (
-    <div className="bg-white border border-line rounded-2xl p-6 shadow-sm animate-fade-in">
-      <span className="inline-block font-mono text-[11px] uppercase tracking-wide text-signal bg-signal/10 px-2 py-1 rounded-full">
+    <div className="bg-violet-950/30 border border-violet-400/30 rounded-2xl p-6 shadow-sm animate-fade-in">
+      <span className="inline-block font-mono text-[11px] uppercase tracking-wide text-violet-100 bg-violet-500/10 px-2 py-1 rounded-full">
         Getting started
       </span>
 
-      <h2 className="font-display text-lg font-semibold mt-4 mb-1 text-ink">
+      <h2 className="font-display text-lg font-semibold mt-4 mb-1 text-violet-50">
         What's your role in this project?
       </h2>
-      <p className="text-sm text-ink/50 mb-5">
+      <p className="text-sm text-violet-200/80 mb-5">
         This determines which questions you'll see next.
       </p>
 
@@ -33,13 +33,13 @@ export default function RoleSelect({ onSelect }: RoleSelectProps) {
           <button
             key={role}
             onClick={() => onSelect(role)}
-            className="flex items-center justify-between text-left border border-line rounded-xl px-4 py-3 hover:border-signal hover:bg-signal/5 transition-colors group"
+            className="flex items-center justify-between text-left border border-violet-400/20 rounded-xl px-4 py-3 hover:border-violet-300 hover:bg-violet-500/5 transition-colors group"
           >
             <div>
-              <div className="font-medium text-ink text-sm">{role}</div>
-              <div className="text-xs text-ink/50 mt-0.5">{blurb}</div>
+              <div className="font-medium text-violet-50 text-sm">{role}</div>
+              <div className="text-xs text-violet-200/70 mt-0.5">{blurb}</div>
             </div>
-            <span className="text-ink/30 group-hover:text-signal group-hover:translate-x-0.5 transition-all">
+            <span className="text-violet-200/60 group-hover:text-violet-50 group-hover:translate-x-0.5 transition-all">
               →
             </span>
           </button>

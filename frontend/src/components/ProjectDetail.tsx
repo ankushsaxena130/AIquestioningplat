@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { API_BASE } from '../App'
+import { API_BASE } from "../config";
 import { Contradiction, FeedbackRecord, GapPrediction, ProjectFull, SimilarProject } from '../types'
 
 interface ProjectDetailProps {

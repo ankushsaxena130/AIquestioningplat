@@ -85,16 +85,16 @@ export default function ConsultantDashboard({ onBack }: ConsultantDashboardProps
     <div className="w-full max-w-3xl">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <p className="font-mono text-xs uppercase tracking-widest text-ink/50 mb-1">Consultant Dashboard</p>
-          <h1 className="font-display text-2xl font-bold text-ink">Active projects</h1>
+          <p className="font-mono text-xs uppercase tracking-widest text-violet-200/80 mb-1">Consultant Dashboard</p>
+          <h1 className="font-display text-2xl font-bold text-violet-50">Active projects</h1>
         </div>
-        <button onClick={onBack} className="text-sm text-ink/50 hover:text-ink transition-colors">
+        <button onClick={onBack} className="text-sm text-violet-200/80 hover:text-violet-50 transition-colors">
           ← Back
         </button>
       </div>
 
       {usingMock && !loading && (
-        <div className="mb-4 text-xs text-amber bg-amber/10 border border-amber/30 rounded-xl px-3 py-2">
+        <div className="mb-4 text-xs text-amber-100 bg-amber-500/10 border border-amber-400/30 rounded-xl px-3 py-2">
           Showing sample data — the backend at {API_BASE} isn't reachable, so real client submissions won't appear yet.
         </div>
       )}
@@ -104,18 +104,18 @@ export default function ConsultantDashboard({ onBack }: ConsultantDashboardProps
           <button
             key={p.id}
             onClick={() => setOpenId(p.id)}
-            className="w-full text-left bg-white border border-line rounded-2xl p-5 flex items-center justify-between hover:border-signal hover:shadow-sm transition-all"
+            className="w-full text-left bg-violet-950/30 border border-violet-400/30 rounded-2xl p-5 flex items-center justify-between hover:border-violet-300 hover:shadow-sm transition-all"
           >
             <div>
-              <div className="font-display font-semibold text-ink">{p.name}</div>
-              <div className="text-xs text-ink/50 mt-0.5">{p.role} · {p.createdAt}</div>
-              <div className="flex gap-4 mt-3 text-xs text-ink/60">
+              <div className="font-display font-semibold text-violet-50">{p.name}</div>
+              <div className="text-xs text-violet-200/70 mt-0.5">{p.role} · {p.createdAt}</div>
+              <div className="flex gap-4 mt-3 text-xs text-violet-200/80">
                 <span>{p.answered} of {p.total} answered</span>
               </div>
             </div>
             <div className="text-right shrink-0 ml-4">
               <div className={`font-display text-2xl font-bold ${readinessColor(p.readiness)}`}>{p.readiness}%</div>
-              <div className="text-[11px] text-ink/40 uppercase tracking-wide">readiness</div>
+              <div className="text-[11px] text-violet-200/70 uppercase tracking-wide">readiness</div>
             </div>
           </button>
         ))}
