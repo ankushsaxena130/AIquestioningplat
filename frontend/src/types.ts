@@ -44,9 +44,17 @@ export interface ExtractedAnswer {
 
 export type Screen =
   | 'landing'
+  | 'client-auth'
+  | 'consultant-auth'
   | 'questions'      // covers: project name -> role -> role-based questions, in one continuous flow
   | 'submitted'
   | 'consultant'
+
+export interface AuthUser {
+  id: string
+  email: string
+  role: 'client' | 'consultant' | 'admin'
+}
 
 export interface ProjectSummary {
   id: string

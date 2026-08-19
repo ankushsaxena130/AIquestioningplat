@@ -5,6 +5,7 @@ import { Contradiction, FeedbackRecord, GapPrediction, ProjectFull, SimilarProje
 interface ProjectDetailProps {
   projectId: string
   fallback?: ProjectFull
+  token: string | null
   onBack: () => void
 }
 
@@ -42,7 +43,7 @@ function gapColor(prob: number) {
   return { bar: '#2F6F5E', text: 'text-signal' }
 }
 
-export default function ProjectDetail({ projectId, fallback, onBack }: ProjectDetailProps) {
+export default function ProjectDetail({ projectId, fallback, token, onBack }: ProjectDetailProps) {
   const [project, setProject] = useState<ProjectFull | null>(fallback ?? null)
   const [loading, setLoading] = useState(!fallback)
   const [gaps, setGaps] = useState<GapPrediction[]>([])
@@ -53,7 +54,9 @@ export default function ProjectDetail({ projectId, fallback, onBack }: ProjectDe
 
   useEffect(() => {
     if (!fallback) {
-      fetch(`${API_BASE}/projects/${projectId}`)
+      fetch(`${API_BASE}/projects/${projectId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      })
         .then((r) => (r.ok ? r.json() : Promise.reject()))
         .then(setProject)
         .catch(() => {})
@@ -71,7 +74,7 @@ export default function ProjectDetail({ projectId, fallback, onBack }: ProjectDe
         }
       })
       .catch(() => {})
-  }, [projectId, fallback])
+  }, [projectId, fallback, token])
 
   async function sendFeedback(targetType: string, targetId: string, action: string, modelScore?: number) {
     try {

@@ -4,7 +4,9 @@ import { ProjectFull, ProjectSummary } from '../types'
 import ProjectDetail from './ProjectDetail'
 
 interface ConsultantDashboardProps {
+  token: string | null
   onBack: () => void
+  onLogout: () => void
 }
 
 const MOCK_PROJECTS: ProjectFull[] = [
@@ -57,14 +59,16 @@ function readinessColor(score: number) {
   return 'text-red-500'
 }
 
-export default function ConsultantDashboard({ onBack }: ConsultantDashboardProps) {
+export default function ConsultantDashboard({ token, onBack, onLogout }: ConsultantDashboardProps) {
   const [projects, setProjects] = useState<ProjectSummary[]>(MOCK_PROJECTS)
   const [usingMock, setUsingMock] = useState(true)
   const [loading, setLoading] = useState(true)
   const [openId, setOpenId] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch(`${API_BASE}/projects`)
+    fetch(`${API_BASE}/projects`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
+    })
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((data: ProjectSummary[]) => {
         if (data.length > 0) {
@@ -74,11 +78,11 @@ export default function ConsultantDashboard({ onBack }: ConsultantDashboardProps
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [token])
 
   if (openId) {
     const mockMatch = MOCK_PROJECTS.find((p) => p.id === openId)
-    return <ProjectDetail projectId={openId} fallback={mockMatch} onBack={() => setOpenId(null)} />
+    return <ProjectDetail projectId={openId} fallback={mockMatch} token={token} onBack={() => setOpenId(null)} />
   }
 
   return (
@@ -88,9 +92,14 @@ export default function ConsultantDashboard({ onBack }: ConsultantDashboardProps
           <p className="font-mono text-xs uppercase tracking-widest text-violet-200/80 mb-1">Consultant Dashboard</p>
           <h1 className="font-display text-2xl font-bold text-violet-50">Active projects</h1>
         </div>
-        <button onClick={onBack} className="text-sm text-violet-200/80 hover:text-violet-50 transition-colors">
-          ← Back
-        </button>
+        <div className="flex items-center gap-4">
+          <button onClick={onLogout} className="text-xs text-violet-200/60 hover:text-violet-50 transition-colors">
+            Log out
+          </button>
+          <button onClick={onBack} className="text-sm text-violet-200/80 hover:text-violet-50 transition-colors">
+            ← Back
+          </button>
+        </div>
       </div>
 
       {usingMock && !loading && (

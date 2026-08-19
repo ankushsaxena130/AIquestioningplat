@@ -1,18 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import DiscoveryProgress, { ProgressMood } from './components/DiscoveryProgress'
 import QuestionCard from './components/QuestionCard'
-import FridayVoiceAgent from './components/FridayVoiceAgent'
 import ProjectIntake from './components/ProjectIntake'
 import ReviewExtracted from './components/ReviewExtracted'
-import RoleSelect from './components/RoleSelect'
+import RoleSelect, { ROLES } from './components/RoleSelect'
 import LandingScreen from './components/LandingScreen'
-import AuthScreen from "./components/AuthScreen";
+import AuthScreen from './components/AuthScreen'
+import FridayAssistant from './components/FridayAssistant'
 import ConsultantDashboard from './components/ConsultantDashboard'
 import GameProgress from './components/GameProgress'
 import SageGuide from './components/SageGuide'
 import { detectIndustries, questionsForRole, selectNextQuestion } from './data/questionBank'
-import { AnswerRecord, ExtractedAnswer, QuestionDef, Role, Screen } from './types'
-import { AuthUser, authHeaders, clearSession, getUser } from './auth'
+import { AnswerRecord, AuthUser, ExtractedAnswer, QuestionDef, Role, Screen } from './types'
 
 export const API_BASE = 'http://localhost:8000'
 
@@ -25,6 +24,20 @@ function mockConfidence(wasOther: boolean, text: string): number {
 }
 
 const CONFIDENCE_THRESHOLD = 0.6
+
+const AUTH_STORAGE_KEY = 'discovery-platform-auth'
+
+function loadStoredAuth(): { token: string; user: AuthUser } | null {
+  try {
+    const raw = localStorage.getItem(AUTH_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (parsed?.token && parsed?.user) return parsed
+    return null
+  } catch {
+    return null
+  }
+}
 
 const CONFIDENT_MESSAGES = [
   "Got it, that's clear.",
@@ -44,11 +57,14 @@ type Step = 'name' | 'review-extracted' | 'role' | 'bank'
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('landing')
-  const [user, setUser] = useState<AuthUser | null>(() => getUser())
-  const [authPath, setAuthPath] = useState<'client' | 'consultant'>('client')
-  const [hasGreeted, setHasGreeted] = useState(false)
+
+  const storedAuth = useMemo(() => loadStoredAuth(), [])
+  const [authToken, setAuthToken] = useState<string | null>(storedAuth?.token ?? null)
+  const [authUser, setAuthUser] = useState<AuthUser | null>(storedAuth?.user ?? null)
 
   const [step, setStep] = useState<Step>('name')
+  const [fridayEnabled, setFridayEnabled] = useState(false)
+  const [fridayGreeted, setFridayGreeted] = useState(false)
   const [projectName, setProjectName] = useState('')
   const [role, setRole] = useState<Role | null>(null)
   const [extracted, setExtracted] = useState<ExtractedAnswer[]>([])
@@ -168,12 +184,48 @@ export default function App() {
     setExtracted(extractedAnswers)
     setSourceDocText(docText)
     setStep('role')
+    // Set directly here (synchronously, inside the click handler that
+    // brought us here) rather than in a separate effect watching `step`
+    // — this keeps Friday's very first speak()/mic access as close to
+    // the actual user gesture (clicking "Continue") as possible.
+    setFridayEnabled(true)
   }
 
   function handleRoleSelect(r: Role) {
     setRole(r)
     const relevant = extracted.filter((e) => questionsForRole(r, projectName).some((q) => q.id === e.questionId))
     setStep(relevant.length > 0 ? 'review-extracted' : 'bank')
+  }
+
+  // Friday's activation happens directly inside handleNameContinue above
+  // (synchronously with the "Continue" click) rather than in an effect
+  // here — see the comment there for why.
+
+  // A synthetic "question" for the role-selection step, built from the
+  // same ROLES list RoleSelect renders — lets Friday read out the six
+  // roles and listen for an answer using the exact same voice-flow logic
+  // as a real bank question, instead of a separate code path.
+  const fridayQuestion: QuestionDef | undefined =
+    step === 'role'
+      ? {
+          id: '__role__',
+          domain: 'Getting started',
+          roles: [],
+          question: "What's your role in this project?",
+          options: ROLES.map((r) => r.role),
+          mandatory: true
+        }
+      : step === 'bank'
+        ? currentQuestion
+        : undefined
+
+  function handleFridayAnswer(text: string, wasOther: boolean) {
+    if (step === 'role') {
+      const matchedRole = ROLES.find((r) => r.role === text)?.role
+      if (matchedRole) handleRoleSelect(matchedRole)
+      return
+    }
+    handleBankAnswer(text, wasOther)
   }
 
   function applyExtractedAnswers(finalItems: ExtractedAnswer[]) {
@@ -346,7 +398,10 @@ export default function App() {
     try {
       await fetch(`${API_BASE}/projects`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+        },
         body: JSON.stringify({
           name: projectName,
           role,
@@ -365,11 +420,27 @@ export default function App() {
     }
   }
 
+  function handleAuthSuccess(token: string, user: AuthUser) {
+    setAuthToken(token)
+    setAuthUser(user)
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ token, user }))
+    setScreen(user.role === 'consultant' || user.role === 'admin' ? 'consultant' : 'questions')
+  }
+
+  function logout() {
+    setAuthToken(null)
+    setAuthUser(null)
+    localStorage.removeItem(AUTH_STORAGE_KEY)
+    resetToLanding()
+  }
+
   function resetToLanding() {
     lastMilestoneRef.current = 0
     setMilestoneMessage(null)
     setScreen('landing')
     setStep('name')
+    setFridayEnabled(false)
+    setFridayGreeted(false)
     setProjectName('')
     setRole(null)
     setExtracted([])
@@ -424,53 +495,55 @@ export default function App() {
       )}
 
       {screen === 'landing' && (
-        <div className="w-full flex flex-col items-center">
-          {user && (
-            <div className="mb-4 text-xs text-violet-200/80 flex items-center gap-3">
-              <span>Signed in as <span className="text-violet-50 font-medium">{user.email}</span> ({user.role})</span>
-              <button
-                onClick={() => {
-                  clearSession()
-                  setUser(null)
-                }}
-                className="text-violet-300 hover:text-violet-50 underline"
-              >
-                Log out
-              </button>
-            </div>
-          )}
-          <LandingScreen
-            onSelect={(path) => {
-              setAuthPath(path)
-              setScreen('login')
-            }}
-          />
-        </div>
-      )}
-
-      {screen === 'login' && (
-        <AuthScreen
-          defaultRole={authPath}
-          allowRegister={authPath === 'client'}
-          onBack={() => setScreen('landing')}
-          onSuccess={(loggedInUser) => {
-            setUser(loggedInUser)
-            setHasGreeted(false)
-            setScreen(authPath === 'client' ? 'questions' : 'consultant')
+        <LandingScreen
+          onSelect={(path) => {
+            if (path === 'client') {
+              setScreen(authUser?.role === 'client' ? 'questions' : 'client-auth')
+            } else {
+              setScreen(authUser?.role === 'consultant' || authUser?.role === 'admin' ? 'consultant' : 'consultant-auth')
+            }
           }}
         />
       )}
 
-      {screen === 'consultant' && <ConsultantDashboard onBack={resetToLanding} />}
+      {screen === 'client-auth' && (
+        <AuthScreen mode="client" onSuccess={handleAuthSuccess} onBack={() => setScreen('landing')} />
+      )}
+
+      {screen === 'consultant-auth' && (
+        <AuthScreen mode="consultant" onSuccess={handleAuthSuccess} onBack={() => setScreen('landing')} />
+      )}
+
+      {screen === 'consultant' && (
+        <ConsultantDashboard token={authToken} onBack={resetToLanding} onLogout={logout} />
+      )}
 
       {screen === 'questions' && (
         <div className="w-full max-w-xl">
-          <header className="mb-8">
-            <p className="font-mono text-xs uppercase tracking-widest text-violet-200/80 mb-1">
-              Discovery session {role ? `· ${role}` : ''}
-            </p>
-            <h1 className="font-display text-2xl font-bold text-violet-50">{projectName || 'New project'}</h1>
+          <header className="mb-8 flex items-start justify-between">
+            <div>
+              <p className="font-mono text-xs uppercase tracking-widest text-violet-200/80 mb-1">
+                Discovery session {role ? `· ${role}` : ''}
+              </p>
+              <h1 className="font-display text-2xl font-bold text-violet-50">{projectName || 'New project'}</h1>
+            </div>
+            {authUser && (
+              <button onClick={logout} className="text-xs text-violet-200/60 hover:text-violet-50 transition-colors shrink-0 mt-1">
+                Log out ({authUser.email})
+              </button>
+            )}
           </header>
+
+          {step !== 'name' && (
+            <FridayAssistant
+              enabled={fridayEnabled}
+              onToggle={() => setFridayEnabled((v) => !v)}
+              currentQuestion={fridayQuestion}
+              onAnswer={handleFridayAnswer}
+              greeted={fridayGreeted}
+              onGreeted={() => setFridayGreeted(true)}
+            />
+          )}
 
           {step === 'name' && <ProjectIntake onContinue={handleNameContinue} />}
 
@@ -576,31 +649,20 @@ export default function App() {
               )}
 
               {currentQuestion ? (
-                <>
-                  <FridayVoiceAgent
-                    key={`friday-${currentQuestion.id}`}
-                    domain={currentQuestion.domain}
-                    question={currentQuestion.question}
-                    options={currentQuestion.options}
-                    onAnswer={handleBankAnswer}
-                    greet={!hasGreeted}
-                    onGreetComplete={() => setHasGreeted(true)}
-                  />
-                  <QuestionCard
-                    key={currentQuestion.id}
-                    domain={currentQuestion.domain}
-                    question={currentQuestion.question}
-                    options={[...currentQuestion.options, 'Other']}
-                    onAnswer={handleBankAnswer}
-                    busy={interpreting}
-                    category={currentQuestion.category ?? 'gap'}
-                    pointsAvailable={10}
-                    onPointsEarned={(points) => {
-                      // Points animation is handled in QuestionCard
-                      // This callback can be used for additional tracking if needed
-                    }}
-                  />
-                </>
+                <QuestionCard
+                  key={currentQuestion.id}
+                  domain={currentQuestion.domain}
+                  question={currentQuestion.question}
+                  options={[...currentQuestion.options, 'Other']}
+                  onAnswer={handleBankAnswer}
+                  busy={interpreting}
+                  category={currentQuestion.category ?? 'gap'}
+                  pointsAvailable={10}
+                  onPointsEarned={(points) => {
+                    // Points animation is handled in QuestionCard
+                    // This callback can be used for additional tracking if needed
+                  }}
+                />
               ) : (
                 <div className="bg-violet-950/30 border border-violet-400/30 rounded-2xl p-8 text-center animate-fade-in">
                   <div className="text-3xl mb-3">{submitting ? '⏳' : '🧠'}</div>
