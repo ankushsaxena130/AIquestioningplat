@@ -126,7 +126,8 @@ export default function App() {
         projectName,
         role,
         answeredSoFar: answers.map((a) => ({ domain: a.domain, question: a.question, answer: a.answer })),
-        askedQuestions: answers.map((a) => a.question)
+        askedQuestions: answers.map((a) => a.question),
+        sourceDocText
       })
     })
       .then((r) => r.json())

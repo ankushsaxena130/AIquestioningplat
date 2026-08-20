@@ -8,6 +8,7 @@ interface FridayVoiceAgentProps {
   onAnswer: (text: string, wasOther: boolean) => void
   greet: boolean
   onGreetComplete: () => void
+  autoStart?: boolean         // try to begin without a tap; falls back to a tap button if the browser blocks it
 }
 
 type FridayState =
@@ -37,7 +38,7 @@ function matchOption(spoken: string, options: string[]): string | null {
   return null
 }
 
-export default function FridayVoiceAgent({ domain, question, options, onAnswer, greet, onGreetComplete }: FridayVoiceAgentProps) {
+export default function FridayVoiceAgent({ domain, question, options, onAnswer, greet, onGreetComplete, autoStart }: FridayVoiceAgentProps) {
   const [state, setState] = useState<FridayState>('not-started')
   const [heardText, setHeardText] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
@@ -48,7 +49,18 @@ export default function FridayVoiceAgent({ domain, question, options, onAnswer, 
   useEffect(() => {
     const hasMic = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
     const hasRecorder = typeof MediaRecorder !== 'undefined'
-    if (!hasMic || !hasRecorder) setState('unsupported')
+    if (!hasMic || !hasRecorder) {
+      setState('unsupported')
+      return
+    }
+    // Try to begin automatically (e.g. right after login) — browsers will
+    // silently block this without a recent user gesture, in which case we
+    // just fall back to the visible "tap to start" button below instead
+    // of hanging or throwing an unhandled error.
+    if (autoStart && !startedRef.current) {
+      handleStart(true).catch(() => setState('not-started'))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // After the first tap, Friday automatically re-reads whenever the
@@ -154,14 +166,21 @@ export default function FridayVoiceAgent({ domain, question, options, onAnswer, 
     })
   }
 
-  async function handleStart() {
+  async function handleStart(isAutoAttempt = false) {
     startedRef.current = true
     try {
       // Requesting mic access here, inside the tap handler, is what
       // reliably satisfies the browser's user-gesture requirement for
       // both microphone permission and audio playback.
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true })
-    } catch {
+    } catch (e) {
+      startedRef.current = false
+      if (isAutoAttempt) {
+        // Silent fallback — the browser blocked auto-start (no recent
+        // gesture, or permission not yet granted). Not an error the user
+        // needs to see; the tap button below covers it instead.
+        throw e
+      }
       setErrorMsg('Friday needs microphone permission to work — check your browser settings.')
       setState('error')
       return
@@ -196,7 +215,7 @@ export default function FridayVoiceAgent({ domain, question, options, onAnswer, 
   if (state === 'not-started') {
     return (
       <button
-        onClick={handleStart}
+        onClick={() => handleStart()}
         className="w-full mb-4 text-sm font-medium text-signal bg-signal/10 border border-signal/30 rounded-xl px-4 py-3 hover:bg-signal/15 transition-colors flex items-center justify-center gap-2"
       >
         🎙️ Tap to let Friday guide you through this

@@ -23,7 +23,7 @@ function ReadinessRing({ score }: { score: number }) {
   return (
     <div className="relative w-24 h-24 shrink-0">
       <svg viewBox="0 0 80 80" className="w-24 h-24 -rotate-90">
-        <circle cx="40" cy="40" r={radius} stroke="#DEDAD0" strokeWidth="8" fill="none" />
+        <circle cx="40" cy="40" r={radius} stroke="#473052" strokeWidth="8" fill="none" />
         <circle
           cx="40" cy="40" r={radius} stroke={color} strokeWidth="8" fill="none" strokeLinecap="round"
           strokeDasharray={circumference} strokeDashoffset={offset}
@@ -119,7 +119,7 @@ export default function ProjectDetail({ projectId, fallback, token, onBack }: Pr
         ← Back to projects
       </button>
 
-      <div className="bg-white border border-line rounded-2xl p-6 mb-6 flex items-center gap-6">
+      <div className="quest-card rounded-2xl p-6 mb-6 flex items-center gap-6">
         <ReadinessRing score={project.readiness} />
         <div className="flex-1">
           <div className="font-display text-xl font-bold text-ink">{project.name}</div>
@@ -140,7 +140,7 @@ export default function ProjectDetail({ projectId, fallback, token, onBack }: Pr
       </div>
 
       {contradictionsChecked && contradictions.length > 0 && (
-        <div className="bg-white border border-amber/40 rounded-2xl p-5 mb-4">
+        <div className="quest-card border-amber/40 rounded-2xl p-5 mb-4">
           <div className="flex items-center justify-between mb-1">
             <h3 className="font-display font-semibold text-ink text-sm">⚠ Contradictions Found</h3>
             <span className="text-[10px] text-ink/30 font-mono uppercase">LLM + validation</span>
@@ -192,7 +192,7 @@ export default function ProjectDetail({ projectId, fallback, token, onBack }: Pr
       )}
 
       {gaps.length > 0 && (
-        <div className="bg-white border border-line rounded-2xl p-5 mb-4">
+        <div className="quest-card rounded-2xl p-5 mb-4">
           <div className="flex items-center justify-between mb-1">
             <h3 className="font-display font-semibold text-ink text-sm">AI Gap Predictions</h3>
             <span className="text-[10px] text-ink/30 font-mono uppercase">
@@ -245,7 +245,7 @@ export default function ProjectDetail({ projectId, fallback, token, onBack }: Pr
       )}
 
       {similar.length > 0 && (
-        <div className="bg-white border border-line rounded-2xl p-5 mb-4">
+        <div className="quest-card rounded-2xl p-5 mb-4">
           <div className="flex items-center justify-between mb-1">
             <h3 className="font-display font-semibold text-ink text-sm">Similar Projects</h3>
             <span className="text-[10px] text-ink/30 font-mono uppercase">domain overlap</span>
@@ -266,7 +266,7 @@ export default function ProjectDetail({ projectId, fallback, token, onBack }: Pr
 
       <div className="grid gap-4">
         {Object.entries(domains).map(([domain, items]) => (
-          <div key={domain} className="bg-white border border-line rounded-2xl p-5">
+          <div key={domain} className="quest-card rounded-2xl p-5">
             <span className="inline-block font-mono text-[11px] uppercase tracking-wide text-signal bg-signal/10 px-2 py-1 rounded-full mb-3">
               {domain}
             </span>

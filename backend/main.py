@@ -661,6 +661,7 @@ class NextQuestionIn(BaseModel):
     role: str
     answeredSoFar: List[dict]   # [{domain, question, answer}, ...]
     askedQuestions: List[str]   # question text already asked, to avoid repeats
+    sourceDocText: Optional[str] = None  # raw text of an uploaded brief, if any
 
 
 def heuristic_next_question(payload: "NextQuestionIn") -> dict:
@@ -692,12 +693,23 @@ def next_question(payload: NextQuestionIn):
         "front page / first screen should show, what differentiates it from the obvious "
         "competitor, what one delightful feature would make users love it, how a "
         "brand-new user's first few minutes should feel.\n\n"
-        "SEQUENCING RULE: prioritize GAP questions first. Only ask an IDEATION question "
-        "once the core requirements/fundamentals for this role look reasonably well "
-        "covered by answeredSoFar — an ideation question about the homepage is wasted if "
-        "basic scope (budget, users, core features, etc.) is still unclear. Once gaps are "
-        "mostly covered, it's good to ask one or two ideation questions before finishing, "
-        "rather than stopping the moment gaps are done — don't skip ideation entirely.\n\n"
+        "3. DOCUMENT-GROUNDED QUESTIONS — if a sourceDocText is provided below, read it "
+        "carefully. It's the client's own uploaded brief, so it often mentions things "
+        "in passing that were never turned into a clean, confirmed answer (a feature "
+        "mentioned once, a constraint hinted at, a stakeholder named, a number given "
+        "without context). Actively look for these and ask about them specifically — "
+        "quote or reference what the document said so the question feels grounded, e.g. "
+        "\"Your brief mentions wanting offline playback — should that be available at "
+        "launch or a later phase?\" This is a THIRD priority alongside gap-filling and "
+        "ideation, not a separate pass — weave it into the same sequencing.\n\n"
+        "SEQUENCING RULE: prioritize GAP questions first (including document-grounded "
+        "gaps — anything the document raised but Q&A never confirmed). Only ask an "
+        "IDEATION question once the core requirements/fundamentals for this role look "
+        "reasonably well covered by answeredSoFar — an ideation question about the "
+        "homepage is wasted if basic scope (budget, users, core features, etc.) is still "
+        "unclear. Once gaps are mostly covered, it's good to ask one or two ideation "
+        "questions before finishing, rather than stopping the moment gaps are done — "
+        "don't skip ideation entirely.\n\n"
         "Given what's already been asked and answered, decide ONE of two things:\n"
         "A. If you believe you now understand enough about this project's fundamentals "
         "AND have offered at least one ideation question once gaps were covered (if none "
@@ -719,6 +731,7 @@ def next_question(payload: NextQuestionIn):
         "role": payload.role,
         "answeredSoFar": payload.answeredSoFar,
         "alreadyAskedCount": len(payload.askedQuestions),
+        "sourceDocText": (payload.sourceDocText[:6000] if payload.sourceDocText else None),
     }, indent=2)
 
     result = call_grok_json(system_prompt, user_prompt)
@@ -756,8 +769,14 @@ def explain_question(payload: ExplainIn):
 
     system_prompt = (
         "A user filling out a requirements-gathering questionnaire doesn't understand "
-        "a question. Explain it in one or two short, plain-language sentences, with a "
-        "concrete example if that helps. No jargon. Do not just repeat the question. "
+        "a question. Explain it the way you'd explain it to a curious 5-year-old: very "
+        "short simple sentences, everyday words only (no business or tech jargon at "
+        "all — say 'the app' not 'the platform', 'save it somewhere' not 'persist to "
+        "storage'), and a small, concrete, everyday analogy (toys, games, a lunchbox, "
+        "a treehouse club, a favorite game — whatever fits) that makes the idea click. "
+        "Keep it warm and friendly, 2-3 short sentences total. Do not just repeat the "
+        "question, and do not talk down to the reader with baby talk — simple and "
+        "friendly, not condescending. "
         'Respond with ONLY JSON: {"explanation": "..."}'
     )
     user_prompt = f"Domain: {payload.domain}\nQuestion: {payload.question}"
