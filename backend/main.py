@@ -32,14 +32,27 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Provider-agnostic LLM client. Set LLM_PROVIDER to "xai", "openai", or
-# "gemini". Same OpenAI SDK for all three — Grok and Gemini both expose
-# OpenAI-compatible endpoints, just a different base_url and key. If no
-# key is set for the selected provider, every LLM call below falls back
-# to the original heuristic so the app still runs.
+# "gemini". If no key is set for the selected provider, every LLM call
+# below falls back to the original heuristic so the app still runs.
+#
+# Grok and OpenAI both expose an OpenAI-compatible endpoint, so those two
+# share the openai SDK client (_grok_client). Gemini uses Google's native
+# google-genai SDK instead (_gemini_client) — as of mid-2026 Google AI
+# Studio issues "Auth keys" (prefix "AQ.") instead of the old "AIza..."
+# Standard keys, and AQ. keys are not reliably accepted by Gemini's
+# OpenAI-compatible endpoint (intermittent 401 ACCESS_TOKEN_TYPE_UNSUPPORTED
+# errors) — only by the native Generative Language API. See:
+# https://ai.google.dev/gemini-api/docs/api-key
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "xai").lower()
 _grok_client = None
+_gemini_client = None
+GEMINI_MODEL_NAME = None
+
 if LLM_PROVIDER == "openai":
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
     XAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -48,19 +61,44 @@ if LLM_PROVIDER == "openai":
         _grok_client = OpenAI(api_key=OPENAI_API_KEY)
 elif LLM_PROVIDER == "gemini":
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-    XAI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+    GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
     if GEMINI_API_KEY:
-        from openai import OpenAI
-        _grok_client = OpenAI(
-            api_key=GEMINI_API_KEY,
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        )
+        from google import genai
+        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 else:
     XAI_API_KEY = os.environ.get("XAI_API_KEY")
     XAI_MODEL = os.environ.get("XAI_MODEL", "grok-4")
     if XAI_API_KEY:
         from openai import OpenAI
         _grok_client = OpenAI(api_key=XAI_API_KEY, base_url="https://api.x.ai/v1")
+
+
+def _llm_ready() -> bool:
+    return _grok_client is not None or _gemini_client is not None
+
+
+def _llm_chat(system_prompt: str, user_prompt: str, temperature: float = 0.4) -> str:
+    """Provider-agnostic raw-text completion. Raises on failure — callers
+    keep their existing try/except so fallback behavior is unchanged."""
+    if _gemini_client is not None:
+        response = _gemini_client.models.generate_content(
+            model=GEMINI_MODEL_NAME,
+            contents=user_prompt,
+            config={"system_instruction": system_prompt, "temperature": temperature},
+        )
+        return response.text.strip()
+    response = _grok_client.chat.completions.create(
+        model=XAI_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=temperature,
+    )
+    return response.choices[0].message.content.strip()
+
+
+print(f"[debug] LLM_PROVIDER={LLM_PROVIDER!r} client_ready={_llm_ready()}")
 
 app = FastAPI(title="Discovery Platform API (stub)")
 
@@ -487,7 +525,7 @@ def llm_extract_answers_from_text(text: str) -> List[dict]:
     Falls back to the keyword heuristic if no API key is configured or the
     call fails for any reason — the app should never hard-crash on this.
     """
-    if not _grok_client:
+    if not _llm_ready():
         return heuristic_extract_answers(text)
 
     question_list = [
@@ -515,15 +553,7 @@ def llm_extract_answers_from_text(text: str) -> List[dict]:
     )
 
     try:
-        response = _grok_client.chat.completions.create(
-            model=XAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-        )
-        raw = response.choices[0].message.content.strip()
+        raw = _llm_chat(system_prompt, user_prompt, temperature=0.2)
         raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
         parsed = json.loads(raw)
 
@@ -563,7 +593,7 @@ async def extract_project(file: UploadFile = File(...)):
         "suggestedName": guess_project_name(text),
         "extracted": llm_extract_answers_from_text(text),
         "charactersRead": len(text),
-        "usedLLM": _grok_client is not None,
+        "usedLLM": _llm_ready(),
         "rawText": text[:ARCHITECTURE_SOURCE_CHAR_CAP],
     }
 
@@ -587,7 +617,7 @@ def interpret_answer(payload: InterpretIn):
     bank question — this is what the progress bar's confident/thinking
     state is actually driven by once a real LLM is wired in.
     """
-    if not _grok_client:
+    if not _llm_ready():
         return heuristic_interpret(payload.freeText)
 
     system_prompt = (
@@ -602,15 +632,7 @@ def interpret_answer(payload: InterpretIn):
     user_prompt = f"Domain: {payload.domain}\nQuestion: {payload.question}\nUser's answer: {payload.freeText}"
 
     try:
-        response = _grok_client.chat.completions.create(
-            model=XAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-        )
-        raw = response.choices[0].message.content.strip()
+        raw = _llm_chat(system_prompt, user_prompt, temperature=0.2)
         raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
         parsed = json.loads(raw)
         return {
@@ -625,24 +647,17 @@ def interpret_answer(payload: InterpretIn):
 
 
 def call_grok_json(system_prompt: str, user_prompt: str) -> Optional[dict]:
-    """Shared helper: call Grok, strip markdown fences if present, parse JSON.
-    Returns None on any failure so callers can fall back cleanly."""
-    if not _grok_client:
+    """Shared helper: call the configured LLM, strip markdown fences if
+    present, parse JSON. Returns None on any failure so callers can fall
+    back cleanly."""
+    if not _llm_ready():
         return None
     try:
-        response = _grok_client.chat.completions.create(
-            model=XAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.4,
-        )
-        raw = response.choices[0].message.content.strip()
+        raw = _llm_chat(system_prompt, user_prompt, temperature=0.4)
         raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
         return json.loads(raw)
     except Exception as e:
-        print(f"[warn] Grok call failed: {e}")
+        print(f"[warn] LLM call failed: {e}")
         return None
 
 
@@ -674,7 +689,7 @@ def heuristic_next_question(payload: "NextQuestionIn") -> dict:
 
 @app.post("/next-question")
 def next_question(payload: NextQuestionIn):
-    if not _grok_client:
+    if not _llm_ready():
         return heuristic_next_question(payload)
 
     system_prompt = (
@@ -760,7 +775,7 @@ class ExplainIn(BaseModel):
 
 @app.post("/explain-question")
 def explain_question(payload: ExplainIn):
-    if not _grok_client:
+    if not _llm_ready():
         return {
             "explanation": f"This question is about {payload.domain.lower()}. "
                             f"In short, we're trying to understand: {payload.question} "
@@ -806,7 +821,7 @@ def heuristic_summary(payload: "SummarizeIn") -> str:
 
 @app.post("/summarize")
 def summarize_session(payload: SummarizeIn):
-    if not _grok_client:
+    if not _llm_ready():
         return {"summary": heuristic_summary(payload)}
 
     system_prompt = (
@@ -1161,7 +1176,7 @@ def get_contradictions(project_id: str):
     project = _PROJECTS.get(project_id)
     if not project:
         raise HTTPException(404, "Project not found")
-    if not _grok_client or len(project["answers"]) < 2:
+    if not _llm_ready() or len(project["answers"]) < 2:
         return heuristic_contradictions()
 
     system_prompt = (
@@ -1399,7 +1414,7 @@ def llm_architecture_brief(project: dict) -> dict:
     risk considerations. LLM proposes structured content; the caller 
     (draw_architecture_brief) still does all the actual deterministic PDF 
     drawing — the LLM never touches the PDF directly."""
-    if not _grok_client:
+    if not _llm_ready():
         return rule_based_architecture_brief(project)
 
     gap_answers = [a for a in project["answers"] if a.get("category", "gap") != "ideation"]
@@ -1545,7 +1560,7 @@ def draw_architecture_brief(c: canvas.Canvas, project: dict):
     y -= 20
     c.setFont("Helvetica", 9)
     c.setFillColor(colors.HexColor("#777777"))
-    if _grok_client:
+    if _llm_ready():
         subtitle = "Synthesized from this session's answers" + (
             " and the uploaded project brief." if project.get("sourceDocText") else "."
         )
