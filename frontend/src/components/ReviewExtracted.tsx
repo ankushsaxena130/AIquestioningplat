@@ -4,9 +4,10 @@ import { ExtractedAnswer } from '../types'
 interface ReviewExtractedProps {
   items: ExtractedAnswer[]
   onConfirm: (finalItems: ExtractedAnswer[]) => void
+  onBack?: () => void
 }
 
-export default function ReviewExtracted({ items, onConfirm }: ReviewExtractedProps) {
+export default function ReviewExtracted({ items, onConfirm, onBack }: ReviewExtractedProps) {
   const [values, setValues] = useState<Record<string, string>>(
     Object.fromEntries(items.map((i) => [i.questionId, i.answer]))
   )
@@ -21,6 +22,14 @@ export default function ReviewExtracted({ items, onConfirm }: ReviewExtractedPro
 
   return (
     <div className="bg-violet-950/30 border border-violet-400/30 rounded-2xl p-6 shadow-sm animate-fade-in">
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="text-sm text-violet-200/80 hover:text-violet-50 transition-colors mb-4 inline-flex items-center gap-1"
+        >
+          ← Back
+        </button>
+      )}
       <span className="inline-block font-mono text-[11px] uppercase tracking-wide text-amber-100 bg-amber-500/10 px-2 py-1 rounded-full">
         Found in your document
       </span>

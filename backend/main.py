@@ -847,6 +847,48 @@ def summarize_session(payload: SummarizeIn):
     return {"summary": result["summary"]}
 
 
+# ---------- uploaded document summary (for the consultant PDF report) ----------
+# Distinct from `heuristic_summary`/`summarize_session` above, which summarize
+# the Q&A session. This summarizes the client's *original uploaded document*
+# (brief, SOW, pitch deck text) so the consultant gets a plain narrative of
+# what the client is trying to build before diving into the answer-by-answer
+# detail. Computed on demand at report-generation time from `sourceDocText` —
+# nothing new to store, works identically for in-memory and DB-backed projects.
+
+def heuristic_document_summary(text: str) -> str:
+    """No-LLM fallback: an honest excerpt, not a real summary — clearly a
+    stand-in, same spirit as the other heuristic fallbacks in this file."""
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= 900:
+        return cleaned
+    return cleaned[:900].rsplit(" ", 1)[0] + "…"
+
+
+def generate_document_summary(source_doc_text: Optional[str]) -> Optional[str]:
+    if not source_doc_text or not source_doc_text.strip():
+        return None
+    if not _llm_ready():
+        return heuristic_document_summary(source_doc_text)
+
+    system_prompt = (
+        "You are writing the opening section of a consulting firm's discovery report, "
+        "based on a document the client originally uploaded (a brief, SOW, or pitch deck). "
+        "Write a clear, well-organized summary (roughly 150-250 words) explaining what the "
+        "client is trying to build: the core idea/product, the problem it solves, who it's "
+        "for, and any specific goals, features, or constraints the document mentions. Base it "
+        "ONLY on the document text provided — do not invent details or fill gaps with "
+        "assumptions. Write it the way a consultant would explain the project to a colleague "
+        "who hasn't read the original document. "
+        'Respond with ONLY JSON: {"summary": "..."}'
+    )
+    # Keep the prompt bounded for very long uploads.
+    user_prompt = json.dumps({"documentText": source_doc_text[:12000]}, indent=2)
+    result = call_grok_json(system_prompt, user_prompt)
+    if not result or not result.get("summary"):
+        return heuristic_document_summary(source_doc_text)
+    return result["summary"]
+
+
 # ---------- client submits a finished session ----------
 
 @app.post("/projects")
@@ -1656,6 +1698,18 @@ def download_report(project_id: str):
     r.body(f"Date: {project['createdAt']}")
     r.body(f"Readiness: {project['readiness']} / 100", size=12, color="#2F6F5E")
     r.rule()
+
+    if project.get("sourceDocText"):
+        doc_summary = generate_document_summary(project.get("sourceDocText"))
+        if doc_summary:
+            r.subheading("What the Client Is Trying to Build")
+            r.body(
+                "Summarized from the document the client uploaded during intake.",
+                size=8, color="#777777"
+            )
+            r.y -= 2
+            r.body(doc_summary)
+            r.rule()
 
     if project.get("summary"):
         r.subheading("Executive Summary")

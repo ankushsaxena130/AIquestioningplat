@@ -44,8 +44,7 @@ export interface ExtractedAnswer {
 
 export type Screen =
   | 'landing'
-  | 'client-auth'
-  | 'consultant-auth'
+  | 'login'           // shared login/registration screen for both client and consultant (see authPath)
   | 'questions'      // covers: project name -> role -> role-based questions, in one continuous flow
   | 'submitted'
   | 'consultant'

@@ -4,9 +4,10 @@ import { ExtractedAnswer } from '../types'
 
 interface ProjectIntakeProps {
   onContinue: (name: string, extracted: ExtractedAnswer[], sourceDocText?: string) => void
+  onBack?: () => void
 }
 
-export default function ProjectIntake({ onContinue }: ProjectIntakeProps) {
+export default function ProjectIntake({ onContinue, onBack }: ProjectIntakeProps) {
   const [name, setName] = useState('')
   const [mode, setMode] = useState<'type' | 'upload'>('type')
   const [file, setFile] = useState<File | null>(null)
@@ -40,6 +41,14 @@ export default function ProjectIntake({ onContinue }: ProjectIntakeProps) {
 
   return (
     <div className="quest-card rounded-2xl p-8 animate-fade-in max-w-2xl">
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="text-sm text-purple-200 hover:text-white transition-colors mb-4 inline-flex items-center gap-1"
+        >
+          ← Back
+        </button>
+      )}
       <div className="quest-chapter mb-3">
         🗺️ CHAPTER 1: THE QUEST BEGINS
       </div>

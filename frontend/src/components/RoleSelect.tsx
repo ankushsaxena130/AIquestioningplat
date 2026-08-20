@@ -3,6 +3,7 @@ import { Role } from '../types'
 
 interface RoleSelectProps {
   onSelect: (role: Role) => void
+  onBack?: () => void
 }
 
 const ROLES: { role: Role; blurb: string }[] = [
@@ -14,9 +15,17 @@ const ROLES: { role: Role; blurb: string }[] = [
   { role: 'IT/Infrastructure', blurb: 'Hosting, uptime, monitoring, DR' }
 ]
 
-export default function RoleSelect({ onSelect }: RoleSelectProps) {
+export default function RoleSelect({ onSelect, onBack }: RoleSelectProps) {
   return (
     <div className="bg-violet-950/30 border border-violet-400/30 rounded-2xl p-6 shadow-sm animate-fade-in">
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="text-sm text-violet-200/80 hover:text-violet-50 transition-colors mb-4 inline-flex items-center gap-1"
+        >
+          ← Back
+        </button>
+      )}
       <span className="inline-block font-mono text-[11px] uppercase tracking-wide text-violet-100 bg-violet-500/10 px-2 py-1 rounded-full">
         Getting started
       </span>

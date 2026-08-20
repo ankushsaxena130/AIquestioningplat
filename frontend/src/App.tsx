@@ -12,7 +12,7 @@ import GameProgress from './components/GameProgress'
 import SageGuide from './components/SageGuide'
 import { detectIndustries, questionsForRole, selectNextQuestion } from './data/questionBank'
 import { AnswerRecord, ExtractedAnswer, QuestionDef, Role, Screen } from './types'
-import { AuthUser, authHeaders, clearSession, getUser } from './auth'
+import { AuthUser, authHeaders, clearSession, getToken, getUser, setSession } from './auth'
 
 export const API_BASE = 'http://localhost:8000'
 
@@ -45,6 +45,7 @@ type Step = 'name' | 'review-extracted' | 'role' | 'bank'
 export default function App() {
   const [screen, setScreen] = useState<Screen>('landing')
   const [user, setUser] = useState<AuthUser | null>(() => getUser())
+  const [token, setToken] = useState<string | null>(() => getToken())
   const [authPath, setAuthPath] = useState<'client' | 'consultant'>('client')
   const [hasGreeted, setHasGreeted] = useState(false)
 
@@ -366,6 +367,37 @@ export default function App() {
     }
   }
 
+  function handleLogout() {
+    clearSession()
+    setUser(null)
+    setToken(null)
+    resetToLanding()
+  }
+
+  // Steps back one screen within the client's project-name -> role ->
+  // review-extracted -> bank flow. Falls back to the landing page from the
+  // very first step. Kept deliberately simple: it moves the step pointer
+  // back rather than trying to un-answer already-submitted bank questions.
+  function stepBack() {
+    if (step === 'name') {
+      resetToLanding()
+      return
+    }
+    if (step === 'role') {
+      setStep('name')
+      return
+    }
+    if (step === 'review-extracted') {
+      setStep('role')
+      return
+    }
+    if (step === 'bank') {
+      const hadExtracted =
+        role !== null && extracted.some((e) => questionsForRole(role, projectName).some((q) => q.id === e.questionId))
+      setStep(hadExtracted ? 'review-extracted' : 'role')
+    }
+  }
+
   function resetToLanding() {
     lastMilestoneRef.current = 0
     setMilestoneMessage(null)
@@ -429,13 +461,7 @@ export default function App() {
           {user && (
             <div className="mb-4 text-xs text-violet-200/80 flex items-center gap-3">
               <span>Signed in as <span className="text-violet-50 font-medium">{user.email}</span> ({user.role})</span>
-              <button
-                onClick={() => {
-                  clearSession()
-                  setUser(null)
-                }}
-                className="text-violet-300 hover:text-violet-50 underline"
-              >
+              <button onClick={handleLogout} className="text-violet-300 hover:text-violet-50 underline">
                 Log out
               </button>
             </div>
@@ -443,6 +469,14 @@ export default function App() {
           <LandingScreen
             onSelect={(path) => {
               setAuthPath(path)
+              // If a user is already logged in as the matching role, skip
+              // straight past the login screen instead of asking them to
+              // sign in again.
+              if (user && user.role === path) {
+                setHasGreeted(false)
+                setScreen(path === 'client' ? 'questions' : 'consultant')
+                return
+              }
               setScreen('login')
             }}
           />
@@ -451,10 +485,11 @@ export default function App() {
 
       {screen === 'login' && (
         <AuthScreen
-          defaultRole={authPath}
-          allowRegister={authPath === 'client'}
+          mode={authPath}
           onBack={() => setScreen('landing')}
-          onSuccess={(loggedInUser) => {
+          onSuccess={(loggedInToken, loggedInUser) => {
+            setSession(loggedInToken, loggedInUser)
+            setToken(loggedInToken)
             setUser(loggedInUser)
             setHasGreeted(false)
             setScreen(authPath === 'client' ? 'questions' : 'consultant')
@@ -462,25 +497,48 @@ export default function App() {
         />
       )}
 
-      {screen === 'consultant' && <ConsultantDashboard onBack={resetToLanding} />}
+      {screen === 'consultant' && (
+        <ConsultantDashboard token={token} onBack={resetToLanding} onLogout={handleLogout} />
+      )}
 
       {screen === 'questions' && (
         <div className="w-full max-w-xl">
-          <header className="mb-8">
-            <p className="font-mono text-xs uppercase tracking-widest text-violet-200/80 mb-1">
-              Discovery session {role ? `· ${role}` : ''}
-            </p>
-            <h1 className="font-display text-2xl font-bold text-violet-50">{projectName || 'New project'}</h1>
+          <header className="mb-8 flex items-start justify-between gap-4">
+            <div>
+              {step === 'bank' && (
+                <button
+                  onClick={stepBack}
+                  className="text-sm text-violet-200/80 hover:text-violet-50 transition-colors mb-3 inline-flex items-center gap-1"
+                >
+                  ← Back
+                </button>
+              )}
+              <p className="font-mono text-xs uppercase tracking-widest text-violet-200/80 mb-1">
+                Discovery session {role ? `· ${role}` : ''}
+              </p>
+              <h1 className="font-display text-2xl font-bold text-violet-50">{projectName || 'New project'}</h1>
+            </div>
+            {user && (
+              <div className="text-xs text-violet-200/80 flex flex-col items-end gap-1 shrink-0 text-right">
+                <span>
+                  Signed in as <span className="text-violet-50 font-medium">{user.email}</span>
+                </span>
+                <button onClick={handleLogout} className="text-violet-300 hover:text-violet-50 underline">
+                  Log out
+                </button>
+              </div>
+            )}
           </header>
 
-          {step === 'name' && <ProjectIntake onContinue={handleNameContinue} />}
+          {step === 'name' && <ProjectIntake onContinue={handleNameContinue} onBack={stepBack} />}
 
-          {step === 'role' && <RoleSelect onSelect={handleRoleSelect} />}
+          {step === 'role' && <RoleSelect onSelect={handleRoleSelect} onBack={stepBack} />}
 
           {step === 'review-extracted' && role && (
             <ReviewExtracted
               items={extracted.filter((e) => questionsForRole(role, projectName).some((q) => q.id === e.questionId))}
               onConfirm={applyExtractedAnswers}
+              onBack={stepBack}
             />
           )}
 
@@ -627,10 +685,15 @@ export default function App() {
           <p className="text-sm text-violet-200/80 mb-6 text-center">
             Your answers have been forwarded to your consulting team for review.
           </p>
-          <div className="text-center">
+          <div className="text-center flex flex-col items-center gap-2">
             <button onClick={resetToLanding} className="text-sm font-medium text-violet-100 hover:underline">
               Start another session
             </button>
+            {user && (
+              <button onClick={handleLogout} className="text-xs text-violet-300 hover:text-violet-50 underline">
+                Log out
+              </button>
+            )}
           </div>
         </div>
       )}
