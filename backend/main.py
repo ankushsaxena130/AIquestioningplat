@@ -36,18 +36,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Provider-agnostic LLM client. Set LLM_PROVIDER to "xai", "openai", or
-# "gemini". If no key is set for the selected provider, every LLM call
-# below falls back to the original heuristic so the app still runs.
+# Provider-agnostic LLM client. Set LLM_PROVIDER to "xai", "openai",
+# "gemini", or "groq". If no key is set for the selected provider, every
+# LLM call below falls back to the original heuristic so the app still runs.
 #
-# Grok and OpenAI both expose an OpenAI-compatible endpoint, so those two
-# share the openai SDK client (_grok_client). Gemini uses Google's native
-# google-genai SDK instead (_gemini_client) — as of mid-2026 Google AI
-# Studio issues "Auth keys" (prefix "AQ.") instead of the old "AIza..."
-# Standard keys, and AQ. keys are not reliably accepted by Gemini's
-# OpenAI-compatible endpoint (intermittent 401 ACCESS_TOKEN_TYPE_UNSUPPORTED
-# errors) — only by the native Generative Language API. See:
-# https://ai.google.dev/gemini-api/docs/api-key
+# Grok, OpenAI, and Groq all expose an OpenAI-compatible endpoint, so those
+# three share the openai SDK client (_grok_client) with just a different
+# base_url + model name. Groq's free tier (console.groq.com, no credit
+# card) hosts Qwen3-32B and several other open-weight models at generous
+# rate limits — good default when other providers are out of credit.
+# Gemini uses Google's native google-genai SDK instead (_gemini_client) —
+# as of mid-2026 Google AI Studio issues "Auth keys" (prefix "AQ.") instead
+# of the old "AIza..." Standard keys, and AQ. keys are not reliably
+# accepted by Gemini's OpenAI-compatible endpoint (intermittent 401
+# ACCESS_TOKEN_TYPE_UNSUPPORTED errors) — only by the native Generative
+# Language API. See: https://ai.google.dev/gemini-api/docs/api-key
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "xai").lower()
 _grok_client = None
 _gemini_client = None
@@ -65,6 +68,12 @@ elif LLM_PROVIDER == "gemini":
     if GEMINI_API_KEY:
         from google import genai
         _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+elif LLM_PROVIDER == "groq":
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+    XAI_MODEL = os.environ.get("GROQ_MODEL", "qwen/qwen3-32b")
+    if GROQ_API_KEY:
+        from openai import OpenAI
+        _grok_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 else:
     XAI_API_KEY = os.environ.get("XAI_API_KEY")
     XAI_MODEL = os.environ.get("XAI_MODEL", "grok-4")
@@ -87,6 +96,13 @@ def _llm_chat(system_prompt: str, user_prompt: str, temperature: float = 0.4) ->
             config={"system_instruction": system_prompt, "temperature": temperature},
         )
         return response.text.strip()
+    extra_body = {}
+    if LLM_PROVIDER == "groq":
+        # Groq's reasoning models (qwen3.x, gpt-oss, etc.) default to
+        # "thinking" mode, which can stream the answer into a separate
+        # reasoning channel and leave message.content empty. We just want
+        # a short direct answer/JSON blob here, so turn reasoning off.
+        extra_body["reasoning_effort"] = "none"
     response = _grok_client.chat.completions.create(
         model=XAI_MODEL,
         messages=[
@@ -94,8 +110,12 @@ def _llm_chat(system_prompt: str, user_prompt: str, temperature: float = 0.4) ->
             {"role": "user", "content": user_prompt},
         ],
         temperature=temperature,
+        extra_body=extra_body,
     )
-    return response.choices[0].message.content.strip()
+    content = response.choices[0].message.content
+    if not content or not content.strip():
+        raise ValueError(f"LLM returned empty content (finish_reason={response.choices[0].finish_reason!r})")
+    return content.strip()
 
 
 print(f"[debug] LLM_PROVIDER={LLM_PROVIDER!r} client_ready={_llm_ready()}")
@@ -677,6 +697,8 @@ class NextQuestionIn(BaseModel):
     answeredSoFar: List[dict]   # [{domain, question, answer}, ...]
     askedQuestions: List[str]   # question text already asked, to avoid repeats
     sourceDocText: Optional[str] = None  # raw text of an uploaded brief, if any
+    dynamicGapAskedCount: int = 0       # gap questions asked so far in THIS dynamic phase
+    dynamicIdeationAskedCount: int = 0  # ideation questions asked so far in THIS dynamic phase
 
 
 def heuristic_next_question(payload: "NextQuestionIn") -> dict:
@@ -845,48 +867,6 @@ def summarize_session(payload: SummarizeIn):
     if not result or not result.get("summary"):
         return {"summary": heuristic_summary(payload)}
     return {"summary": result["summary"]}
-
-
-# ---------- uploaded document summary (for the consultant PDF report) ----------
-# Distinct from `heuristic_summary`/`summarize_session` above, which summarize
-# the Q&A session. This summarizes the client's *original uploaded document*
-# (brief, SOW, pitch deck text) so the consultant gets a plain narrative of
-# what the client is trying to build before diving into the answer-by-answer
-# detail. Computed on demand at report-generation time from `sourceDocText` —
-# nothing new to store, works identically for in-memory and DB-backed projects.
-
-def heuristic_document_summary(text: str) -> str:
-    """No-LLM fallback: an honest excerpt, not a real summary — clearly a
-    stand-in, same spirit as the other heuristic fallbacks in this file."""
-    cleaned = " ".join(text.split())
-    if len(cleaned) <= 900:
-        return cleaned
-    return cleaned[:900].rsplit(" ", 1)[0] + "…"
-
-
-def generate_document_summary(source_doc_text: Optional[str]) -> Optional[str]:
-    if not source_doc_text or not source_doc_text.strip():
-        return None
-    if not _llm_ready():
-        return heuristic_document_summary(source_doc_text)
-
-    system_prompt = (
-        "You are writing the opening section of a consulting firm's discovery report, "
-        "based on a document the client originally uploaded (a brief, SOW, or pitch deck). "
-        "Write a clear, well-organized summary (roughly 150-250 words) explaining what the "
-        "client is trying to build: the core idea/product, the problem it solves, who it's "
-        "for, and any specific goals, features, or constraints the document mentions. Base it "
-        "ONLY on the document text provided — do not invent details or fill gaps with "
-        "assumptions. Write it the way a consultant would explain the project to a colleague "
-        "who hasn't read the original document. "
-        'Respond with ONLY JSON: {"summary": "..."}'
-    )
-    # Keep the prompt bounded for very long uploads.
-    user_prompt = json.dumps({"documentText": source_doc_text[:12000]}, indent=2)
-    result = call_grok_json(system_prompt, user_prompt)
-    if not result or not result.get("summary"):
-        return heuristic_document_summary(source_doc_text)
-    return result["summary"]
 
 
 # ---------- client submits a finished session ----------
@@ -1698,18 +1678,6 @@ def download_report(project_id: str):
     r.body(f"Date: {project['createdAt']}")
     r.body(f"Readiness: {project['readiness']} / 100", size=12, color="#2F6F5E")
     r.rule()
-
-    if project.get("sourceDocText"):
-        doc_summary = generate_document_summary(project.get("sourceDocText"))
-        if doc_summary:
-            r.subheading("What the Client Is Trying to Build")
-            r.body(
-                "Summarized from the document the client uploaded during intake.",
-                size=8, color="#777777"
-            )
-            r.y -= 2
-            r.body(doc_summary)
-            r.rule()
 
     if project.get("summary"):
         r.subheading("Executive Summary")

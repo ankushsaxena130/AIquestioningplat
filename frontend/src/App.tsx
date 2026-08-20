@@ -14,7 +14,7 @@ import { detectIndustries, questionsForRole, selectNextQuestion } from './data/q
 import { AnswerRecord, ExtractedAnswer, QuestionDef, Role, Screen } from './types'
 import { AuthUser, authHeaders, clearSession, getToken, getUser, setSession } from './auth'
 
-export const API_BASE = 'http://localhost:8000'
+export const API_BASE = 'http://localhost:8001'
 
 function mockConfidence(wasOther: boolean, text: string): number {
   if (!wasOther) return 0.95
