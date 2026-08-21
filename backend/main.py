@@ -16,6 +16,7 @@ Run:
     uvicorn main:app --reload --port 8000
 """
 
+import base64
 import io
 import json
 import os
@@ -33,24 +34,23 @@ from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 from dotenv import load_dotenv
+import requests as _requests
 
 load_dotenv()
 
-# Provider-agnostic LLM client. Set LLM_PROVIDER to "xai", "openai",
-# "gemini", or "groq". If no key is set for the selected provider, every
-# LLM call below falls back to the original heuristic so the app still runs.
+# Provider-agnostic LLM client. Set LLM_PROVIDER to "xai", "openai", "groq",
+# or "gemini". If no key is set for the selected provider, every LLM call
+# below falls back to the original heuristic so the app still runs.
 #
 # Grok, OpenAI, and Groq all expose an OpenAI-compatible endpoint, so those
-# three share the openai SDK client (_grok_client) with just a different
-# base_url + model name. Groq's free tier (console.groq.com, no credit
-# card) hosts Qwen3-32B and several other open-weight models at generous
-# rate limits — good default when other providers are out of credit.
-# Gemini uses Google's native google-genai SDK instead (_gemini_client) —
-# as of mid-2026 Google AI Studio issues "Auth keys" (prefix "AQ.") instead
-# of the old "AIza..." Standard keys, and AQ. keys are not reliably
-# accepted by Gemini's OpenAI-compatible endpoint (intermittent 401
-# ACCESS_TOKEN_TYPE_UNSUPPORTED errors) — only by the native Generative
-# Language API. See: https://ai.google.dev/gemini-api/docs/api-key
+# three share the openai SDK client (_grok_client) just pointed at different
+# base_urls. Gemini uses Google's native google-genai SDK instead
+# (_gemini_client) — as of mid-2026 Google AI Studio issues "Auth keys"
+# (prefix "AQ.") instead of the old "AIza..." Standard keys, and AQ. keys
+# are not reliably accepted by Gemini's OpenAI-compatible endpoint
+# (intermittent 401 ACCESS_TOKEN_TYPE_UNSUPPORTED errors) — only by the
+# native Generative Language API. See:
+# https://ai.google.dev/gemini-api/docs/api-key
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "xai").lower()
 _grok_client = None
 _gemini_client = None
@@ -62,18 +62,21 @@ if LLM_PROVIDER == "openai":
     if OPENAI_API_KEY:
         from openai import OpenAI
         _grok_client = OpenAI(api_key=OPENAI_API_KEY)
+elif LLM_PROVIDER == "groq":
+    GROQ_API_KEY_FOR_LLM = os.environ.get("GROQ_API_KEY")
+    # gpt-oss-120b is Groq's current recommended general-purpose chat model
+    # (llama-3.3-70b-versatile was deprecated June 2026) — override with
+    # GROQ_MODEL if you want something else.
+    XAI_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+    if GROQ_API_KEY_FOR_LLM:
+        from openai import OpenAI
+        _grok_client = OpenAI(api_key=GROQ_API_KEY_FOR_LLM, base_url="https://api.groq.com/openai/v1")
 elif LLM_PROVIDER == "gemini":
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
     GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
     if GEMINI_API_KEY:
         from google import genai
         _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-elif LLM_PROVIDER == "groq":
-    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-    XAI_MODEL = os.environ.get("GROQ_MODEL", "qwen/qwen3-32b")
-    if GROQ_API_KEY:
-        from openai import OpenAI
-        _grok_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 else:
     XAI_API_KEY = os.environ.get("XAI_API_KEY")
     XAI_MODEL = os.environ.get("XAI_MODEL", "grok-4")
@@ -96,13 +99,6 @@ def _llm_chat(system_prompt: str, user_prompt: str, temperature: float = 0.4) ->
             config={"system_instruction": system_prompt, "temperature": temperature},
         )
         return response.text.strip()
-    extra_body = {}
-    if LLM_PROVIDER == "groq":
-        # Groq's reasoning models (qwen3.x, gpt-oss, etc.) default to
-        # "thinking" mode, which can stream the answer into a separate
-        # reasoning channel and leave message.content empty. We just want
-        # a short direct answer/JSON blob here, so turn reasoning off.
-        extra_body["reasoning_effort"] = "none"
     response = _grok_client.chat.completions.create(
         model=XAI_MODEL,
         messages=[
@@ -110,15 +106,64 @@ def _llm_chat(system_prompt: str, user_prompt: str, temperature: float = 0.4) ->
             {"role": "user", "content": user_prompt},
         ],
         temperature=temperature,
-        extra_body=extra_body,
     )
-    content = response.choices[0].message.content
-    if not content or not content.strip():
-        raise ValueError(f"LLM returned empty content (finish_reason={response.choices[0].finish_reason!r})")
-    return content.strip()
+    return response.choices[0].message.content.strip()
 
 
 print(f"[debug] LLM_PROVIDER={LLM_PROVIDER!r} client_ready={_llm_ready()}")
+
+# Voice (Friday) — text-to-speech + speech-to-text for the in-session voice
+# assistant (see FridayVoiceAgent.tsx on the frontend). Independent of
+# LLM_PROVIDER above, since that's for text answers. Two audio providers are
+# supported:
+#   - "sarvam" — SARVAM_API_KEY, Bulbul v3 (TTS) + Saaras v3 (STT), called
+#     directly over REST with the `requests` library (Sarvam isn't
+#     OpenAI-SDK-compatible, unlike the other providers in this file).
+#   - "openai" — OPENAI_API_KEY, uses tts-1 + whisper-1, via the openai SDK.
+# (Groq's TTS models — playai-tts — were decommissioned by Groq in favor of
+# Orpheus; Groq is no longer used for voice here, only for LLM_PROVIDER=groq
+# text generation above, which is unaffected.)
+# Set VOICE_PROVIDER explicitly, or leave it blank to auto-detect from
+# whichever key is present (Sarvam checked first).
+VOICE_PROVIDER = os.environ.get("VOICE_PROVIDER", "").lower()
+if not VOICE_PROVIDER:
+    if os.environ.get("SARVAM_API_KEY"):
+        VOICE_PROVIDER = "sarvam"
+    elif os.environ.get("OPENAI_API_KEY"):
+        VOICE_PROVIDER = "openai"
+
+SARVAM_API_BASE = "https://api.sarvam.ai"
+_SARVAM_API_KEY = None
+_voice_client = None          # only set/used for the "openai" path
+_VOICE_TTS_MODEL = None
+_VOICE_TTS_VOICE = None
+_VOICE_STT_MODEL = None
+
+if VOICE_PROVIDER == "sarvam":
+    _SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY")
+    _VOICE_TTS_MODEL = os.environ.get("SARVAM_TTS_MODEL", "bulbul:v3")
+    _VOICE_TTS_VOICE = os.environ.get("SARVAM_TTS_SPEAKER", "simran")
+    _VOICE_STT_MODEL = os.environ.get("SARVAM_STT_MODEL", "saaras:v3")
+elif VOICE_PROVIDER == "openai":
+    if LLM_PROVIDER == "openai" and _grok_client is not None:
+        _voice_client = _grok_client
+    else:
+        _OPENAI_API_KEY_FOR_VOICE = os.environ.get("OPENAI_API_KEY")
+        if _OPENAI_API_KEY_FOR_VOICE:
+            from openai import OpenAI as _OpenAIForVoice
+            _voice_client = _OpenAIForVoice(api_key=_OPENAI_API_KEY_FOR_VOICE)
+    _VOICE_TTS_MODEL = "tts-1"
+    _VOICE_TTS_VOICE = "nova"
+    _VOICE_STT_MODEL = "whisper-1"
+
+
+def _voice_ready() -> bool:
+    if VOICE_PROVIDER == "sarvam":
+        return bool(_SARVAM_API_KEY)
+    return _voice_client is not None
+
+
+print(f"[debug] Friday voice provider={VOICE_PROVIDER or None!r} ready={_voice_ready()}")
 
 app = FastAPI(title="Discovery Platform API (stub)")
 
@@ -674,6 +719,7 @@ def call_grok_json(system_prompt: str, user_prompt: str) -> Optional[dict]:
         return None
     try:
         raw = _llm_chat(system_prompt, user_prompt, temperature=0.4)
+        print(f"[call_grok_json] raw response: {raw!r}")
         raw = re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
         return json.loads(raw)
     except Exception as e:
@@ -697,8 +743,6 @@ class NextQuestionIn(BaseModel):
     answeredSoFar: List[dict]   # [{domain, question, answer}, ...]
     askedQuestions: List[str]   # question text already asked, to avoid repeats
     sourceDocText: Optional[str] = None  # raw text of an uploaded brief, if any
-    dynamicGapAskedCount: int = 0       # gap questions asked so far in THIS dynamic phase
-    dynamicIdeationAskedCount: int = 0  # ideation questions asked so far in THIS dynamic phase
 
 
 def heuristic_next_question(payload: "NextQuestionIn") -> dict:
@@ -823,6 +867,107 @@ def explain_question(payload: ExplainIn):
     return {"explanation": result["explanation"]}
 
 
+# ---------- voice (Friday) ----------
+# Text-to-speech + speech-to-text for FridayVoiceAgent.tsx, which reads
+# each MCQ question aloud, records a short clip, and asks us to
+# transcribe + match it back to one of the options. See the module-level
+# _voice_client / _voice_ready() setup above for how the key is picked up.
+
+class SpeakIn(BaseModel):
+    text: str
+
+
+@app.post("/voice/speak")
+def voice_speak(payload: SpeakIn):
+    if not _voice_ready():
+        raise HTTPException(
+            503,
+            "Friday's voice isn't set up on this server yet — add SARVAM_API_KEY "
+            "to backend/.env to enable it.",
+        )
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(400, "No text to speak.")
+    print(f"[voice/speak] sending {len(text)} chars: {text[:300]!r}")
+
+    if VOICE_PROVIDER == "sarvam":
+        try:
+            resp = _requests.post(
+                f"{SARVAM_API_BASE}/text-to-speech",
+                headers={"api-subscription-key": _SARVAM_API_KEY},
+                json={
+                    "text": text,
+                    "language_code": "en-IN",
+                    "speaker": _VOICE_TTS_VOICE,
+                    "model": _VOICE_TTS_MODEL,
+                    "output_audio_codec": "wav",
+                },
+                timeout=30,
+            )
+            if resp.status_code >= 400:
+                print(f"[voice/speak] Sarvam {resp.status_code}: {resp.text}")
+            resp.raise_for_status()
+            audios = resp.json().get("audios") or []
+            if not audios:
+                raise ValueError("Sarvam returned no audio")
+        except Exception as e:
+            raise HTTPException(502, f"Friday couldn't generate speech right now: {e}")
+        # Sarvam already returns base64-encoded WAV — pass it straight
+        # through, same shape the frontend already expects.
+        return {"audioBase64": audios[0]}
+
+    try:
+        response = _voice_client.audio.speech.create(
+            model=_VOICE_TTS_MODEL,
+            voice=_VOICE_TTS_VOICE,
+            input=text,
+            response_format="wav",
+        )
+        audio_bytes = response.read()
+    except Exception as e:
+        raise HTTPException(502, f"Friday couldn't generate speech right now: {e}")
+    return {"audioBase64": base64.b64encode(audio_bytes).decode("utf-8")}
+
+
+@app.post("/voice/listen")
+async def voice_listen(file: UploadFile = File(...)):
+    if not _voice_ready():
+        raise HTTPException(
+            503,
+            "Friday's voice isn't set up on this server yet — add SARVAM_API_KEY "
+            "to backend/.env to enable it.",
+        )
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        return {"transcript": ""}
+
+    if VOICE_PROVIDER == "sarvam":
+        try:
+            resp = _requests.post(
+                f"{SARVAM_API_BASE}/speech-to-text",
+                headers={"api-subscription-key": _SARVAM_API_KEY},
+                files={"file": (file.filename or "clip.webm", audio_bytes, (file.content_type or "audio/webm").split(";")[0])},
+                data={"model": _VOICE_STT_MODEL, "language_code": "en-IN"},
+                timeout=30,
+            )
+            if resp.status_code >= 400:
+                print(f"[voice/listen] Sarvam {resp.status_code}: {resp.text}")
+            resp.raise_for_status()
+            transcript = (resp.json().get("transcript") or "").strip()
+        except Exception as e:
+            raise HTTPException(502, f"Friday couldn't hear that: {e}")
+        return {"transcript": transcript}
+
+    try:
+        transcript = _voice_client.audio.transcriptions.create(
+            model=_VOICE_STT_MODEL,
+            file=(file.filename or "clip.webm", audio_bytes, file.content_type or "audio/webm"),
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Friday couldn't hear that: {e}")
+    return {"transcript": (transcript.text or "").strip()}
+
+
 # ---------- session summary ----------
 
 class SummarizeIn(BaseModel):
@@ -867,6 +1012,48 @@ def summarize_session(payload: SummarizeIn):
     if not result or not result.get("summary"):
         return {"summary": heuristic_summary(payload)}
     return {"summary": result["summary"]}
+
+
+# ---------- uploaded document summary (for the consultant PDF report) ----------
+# Distinct from `heuristic_summary`/`summarize_session` above, which summarize
+# the Q&A session. This summarizes the client's *original uploaded document*
+# (brief, SOW, pitch deck text) so the consultant gets a plain narrative of
+# what the client is trying to build before diving into the answer-by-answer
+# detail. Computed on demand at report-generation time from `sourceDocText` —
+# nothing new to store, works identically for in-memory and DB-backed projects.
+
+def heuristic_document_summary(text: str) -> str:
+    """No-LLM fallback: an honest excerpt, not a real summary — clearly a
+    stand-in, same spirit as the other heuristic fallbacks in this file."""
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= 900:
+        return cleaned
+    return cleaned[:900].rsplit(" ", 1)[0] + "…"
+
+
+def generate_document_summary(source_doc_text: Optional[str]) -> Optional[str]:
+    if not source_doc_text or not source_doc_text.strip():
+        return None
+    if not _llm_ready():
+        return heuristic_document_summary(source_doc_text)
+
+    system_prompt = (
+        "You are writing the opening section of a consulting firm's discovery report, "
+        "based on a document the client originally uploaded (a brief, SOW, or pitch deck). "
+        "Write a clear, well-organized summary (roughly 150-250 words) explaining what the "
+        "client is trying to build: the core idea/product, the problem it solves, who it's "
+        "for, and any specific goals, features, or constraints the document mentions. Base it "
+        "ONLY on the document text provided — do not invent details or fill gaps with "
+        "assumptions. Write it the way a consultant would explain the project to a colleague "
+        "who hasn't read the original document. "
+        'Respond with ONLY JSON: {"summary": "..."}'
+    )
+    # Keep the prompt bounded for very long uploads.
+    user_prompt = json.dumps({"documentText": source_doc_text[:12000]}, indent=2)
+    result = call_grok_json(system_prompt, user_prompt)
+    if not result or not result.get("summary"):
+        return heuristic_document_summary(source_doc_text)
+    return result["summary"]
 
 
 # ---------- client submits a finished session ----------
@@ -1679,6 +1866,18 @@ def download_report(project_id: str):
     r.body(f"Readiness: {project['readiness']} / 100", size=12, color="#2F6F5E")
     r.rule()
 
+    if project.get("sourceDocText"):
+        doc_summary = generate_document_summary(project.get("sourceDocText"))
+        if doc_summary:
+            r.subheading("What the Client Is Trying to Build")
+            r.body(
+                "Summarized from the document the client uploaded during intake.",
+                size=8, color="#777777"
+            )
+            r.y -= 2
+            r.body(doc_summary)
+            r.rule()
+
     if project.get("summary"):
         r.subheading("Executive Summary")
         r.body(project["summary"])
@@ -1734,3 +1933,6 @@ def download_report(project_id: str):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+
